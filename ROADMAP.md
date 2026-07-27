@@ -54,6 +54,33 @@ Compile a display view carrying `ACES_OUTPUT_TRANSFORM_20` and confirm it
 refuses, naming the op. Run the harness across the whole pinned config and
 confirm every pair lands in one bucket or the other, with none skipped.
 
+## Display rendering ops §road:display-rendering
+
+The two `FixedFunction` styles §road:named-refusal rejects. Both are
+closed-form — neither needs a 3D LUT in OCIO's own partition — so this is
+sequencing, not a capability gap (§spec:op-coverage). They are separated
+because their cost and their risk differ by an order of magnitude.
+
+### Rec.2100 surround §road:rec2100-surround
+
+Emit `REC2100_SURROUND`, a surround/system-gamma adjustment, unblocking
+the 5 transforms that reach an HLG display (§spec:op-coverage). Small, and
+the only op between this compiler and HLG output — worth taking ahead of
+any scene-referred work, since a consumer wanting HLG today is refused by
+the cheap op rather than the expensive one. Depends on
+§road:oracle-harness, which is what makes a rendering op safe to add at
+all.
+
+### ACES output transform §road:aces-output-transform
+
+Emit `ACES_OUTPUT_TRANSFORM_20` — tone scale, chroma compression, gamut
+mapping — unblocking the 24 display views (§spec:op-coverage). Deferred
+behind a named trigger: the first consumer running a scene-referred
+working space and needing a display rendering. *Why last*: this transform
+is the image's look, so an error in it is both the most visible failure
+available and the least likely to be caught by anything except the oracle
+sweep. Depends on §road:oracle-harness.
+
 ## Live parameters §road:live-parameters
 
 Compile a transform's dynamic properties to graph inputs so a consumer

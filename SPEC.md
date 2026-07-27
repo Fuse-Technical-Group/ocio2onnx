@@ -84,14 +84,27 @@ with no change here. *Why this matters*: the alternative is per-vendor
 implementations against curves whose definitions are not uniformly
 published — unbounded work, and unverifiable.
 
-**`FixedFunction` is refused, by name, at compile.** Only two styles occur
-— `ACES_OUTPUT_TRANSFORM_20` and `REC2100_SURROUND` — and both are
-tone-mapping and gamut-compression math that should not be hand-ported.
-OCIO reports the op list before anything executes, so a transform
-containing an unimplemented op fails naming the op, the transform, and its
-endpoints, rather than emitting a graph that is quietly wrong. *Why refuse
-rather than approximate*: an approximation of a display rendering
-transform is a picture nobody signed off on.
+**`FixedFunction` is refused, by name, at compile.** OCIO reports the op
+list before anything executes, so a transform containing an unimplemented
+op fails naming the op, the transform, and its endpoints, rather than
+emitting a graph that is quietly wrong. *Why refuse rather than
+approximate*: an approximation of a display rendering transform is a
+picture nobody signed off on.
+
+**Refused is not unreachable.** Both styles are closed-form — neither
+needs a 3D LUT in OCIO's own GPU partition, which is the measure of
+whether an op can be expressed analytically at all. Refusal is a scope
+and risk decision, and the two styles differ sharply in both:
+
+- `REC2100_SURROUND` (5 transforms) is a surround/system-gamma
+  adjustment — a small op, and the only thing standing between this
+  compiler and HLG display output.
+- `ACES_OUTPUT_TRANSFORM_20` (24 transforms) is the ACES 2.0 output
+  transform: tone scale, chroma compression, and gamut mapping. Published
+  with a reference implementation, and substantial. It is also *the look*
+  — the most visible math in any pipeline that runs it — so it is the
+  worst candidate for an early port and the best candidate for a careful
+  one.
 
 **Refusal is by op, not by category.** 131 of the 159 transforms compile;
 28 refuse. Most are the ACES output transforms, where a caller expects it

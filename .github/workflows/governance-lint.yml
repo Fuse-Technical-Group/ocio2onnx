@@ -1,0 +1,16 @@
+name: governance-lint
+on:
+  pull_request:
+  merge_group:
+
+# Validate governance docs against the symphonize notation contract:
+# markdownlint, SPEC status lines, slug-suffix heading grammar, and
+# §-reference resolution. The contract is maintained upstream; pinning
+# @notation--v0 tracks the pre-1.0 notation major line.
+jobs:
+  governance:
+    uses: repentsinner/symphonize/.github/workflows/governance-lint.yml@notation--v0
+    with:
+      # README is a pre-implementation landing page; empty type skips
+      # README heading validation until the library ships a usage surface.
+      readme-type: ""

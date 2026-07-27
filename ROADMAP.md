@@ -6,8 +6,9 @@ means the work is not done.
 
 ## Compiler core §road:compiler-core
 
-Turn an OCIO transform into a verified ONNX graph for the ops that make up
-the ACES configs (§spec:op-coverage). Nothing here interprets color: every
+Turn an OCIO transform into a verified ONNX graph for the closed-form ops,
+which reach 111 of the 159 transforms in the ACES configs with no lookup
+table at all (§spec:op-coverage). Nothing here interprets color: every
 coefficient is read off OCIO's own transform introspection, and the
 oracle decides whether the reading was right.
 
@@ -20,39 +21,77 @@ name against the config that was actually loaded
 (`ocio://studio-config-…`) or by file path; the resolved built-in name is
 recorded in the emitted graph's metadata so an artifact says which
 database produced it, never `ocio://default`, which moves between
-releases.
+releases. The graph's interface is three channels with spatial dimensions
+free (§spec:emitted-graph).
 
-### Op emitters §road:op-emitters
+### Oracle verification harness §road:oracle-harness
 
-Emit ONNX for the seven supported ops — `Matrix`, `Range`, `Exponent`,
-`ExponentWithLinear`, `Log`, `LogCamera`, `Lut1D` — reading parameters
-from the transform introspection API (§spec:op-coverage). `Matrix` emits
-as a 1×1 convolution, `Lut1D` as a gather and lerp, the rest as
-elementwise arithmetic. Depends on §road:transform-addressing.
+Generate the input lattice — out-of-range, near-zero, and per-op
+breakpoint values — and compare an emitted graph against OCIO's CPU
+processor within tolerance (§spec:verification). Built ahead of the
+emitters rather than after them: it is the failing test each emitter is
+written against, and a misread parameter has no other way of surfacing.
+Depends on §road:transform-addressing, and is exercised first on `Matrix`,
+the one op whose correctness is legible by inspection.
+
+### Closed-form op emitters §road:closed-form-emitters
+
+Emit ONNX for `Matrix`, `Range`, `Exponent`, `ExponentWithLinear`, `Log`,
+and `LogCamera` in both directions — roughly eleven code paths, since most
+of these ops arrive inverse (§spec:op-emission). Emitted at float32, which
+the graph declares (§spec:precision). Unlocks 111 transforms on its own.
+Depends on §road:oracle-harness.
 
 ### Named refusal §road:named-refusal
 
 Enumerate a processor's ops before emitting and refuse any the compiler
 does not implement, naming the op, the transform, and its endpoints
-(§spec:op-coverage). `FixedFunction` is the only op this rejects in the
-ACES configs today; the check is written against the supported set, so a
+(§spec:op-coverage). The check is written against the supported set, so a
 future OCIO op is refused rather than silently dropped. Depends on
-§road:op-emitters.
-
-### Oracle verification harness §road:oracle-harness
-
-Property-test every emitted graph against OCIO's CPU processor over a
-generated input lattice, including out-of-range, near-zero, and
-per-op breakpoint values (§spec:verification). The harness enumerates the
-pinned config exhaustively and asserts the partition: every color space
-pair either verifies within tolerance or refuses by name. Depends on
-§road:named-refusal.
+§road:closed-form-emitters.
 
 **Verify:** Compile `Log3G10 REDWideGamutRGB` → `ACES2065-1` and confirm
 the emitted graph agrees with the CPU processor across the lattice.
 Compile a display view carrying `ACES_OUTPUT_TRANSFORM_20` and confirm it
 refuses, naming the op. Run the harness across the whole pinned config and
-confirm every pair lands in one bucket or the other, with none skipped.
+confirm all 111 closed-form transforms verify, that the rest refuse by
+name, and that none are skipped.
+
+## Sampled lookups §road:sampled-luts
+
+The 20 transforms carrying a `Lut1D` (§spec:op-coverage). Split from
+§road:compiler-core because the closed-form set needs no table machinery
+at all, and because this is the most involved emitter in the project
+(§spec:op-emission). Each workstream adds coverage the harness confirms
+independently.
+
+### Uniform 1D LUTs §road:uniform-lut
+
+Emit a forward `Lut1D` over a uniform domain as a gather and lerp,
+unblocking ACEScc, CanonLog2, and CanonLog3 (§spec:op-emission). The
+smallest of the three, and the one that settles how a table reaches the
+graph as an initializer. Depends on §road:oracle-harness.
+
+### Half-domain 1D LUTs §road:half-domain-lut
+
+Emit a `Lut1D` over a half domain by reconstructing the float16 index
+arithmetically, after OCIO's own GLSL, unblocking the PQ and ST2084
+displays, ADX10, ADX16, and Apple Log (§spec:op-emission). 34 of the 40
+`Lut1D` ops in the pinned config take this path. Depends on
+§road:uniform-lut.
+
+### Inverse 1D LUTs §road:inverse-lut
+
+Invert a monotonic `Lut1D` at compile time onto a uniform domain and emit
+the result as an ordinary table (§spec:op-emission), unblocking the 8
+transforms that carry one. Whether the resampling holds tolerance is the
+harness's finding rather than an assumption. Depends on
+§road:half-domain-lut.
+
+**Verify:** Compile `ACES2065-1` → `Rec.2100-PQ - Display` and confirm the
+graph agrees with the CPU processor across the lattice, including inputs
+falling between two adjacent half slots. Confirm the census partition now
+places all 131 non-`FixedFunction` transforms in the verified bucket.
 
 ## Display rendering ops §road:display-rendering
 

@@ -14,8 +14,16 @@ jobs:
         with:
           globs: "*.md"
 
-  # No shellcheck job: this repo carries no shell scripts yet. Restore the
-  # one from backlit_molecule's quality.yml when tools/*.sh appears.
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # Pinned to 3.12: opencolorio publishes no wheel for 3.13+.
+      - run: bash tools/ci.sh
+
   #
   # SPEC status lines, slug-suffix heading grammar, and §-reference
   # resolution are validated by the symphonize notation contract in

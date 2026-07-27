@@ -39,10 +39,29 @@ types, and needs no 3D LUT at all**:
 | `LogCamera` | 24 |
 | `Log` | 4 |
 
-Seven compile to ONNX directly. Vendor differences are **coefficients, not
-code**: RED Log3G10, ARRI LogC4, CanonLog3, Apple Log and BMDFilm are all
-one parametric `LogCamera` op with different numbers, which OCIO supplies.
-Adding a camera is a config update.
+Counting ops understates the reach, though. What matters is how the
+transforms partition:
+
+| Transform class | Count |
+| --- | --- |
+| closed-form ops only | 111 |
+| `Lut1D`, half-domain | 14 |
+| `Lut1D`, uniform | 6 |
+| refused (`FixedFunction`) | 28 |
+
+**Six closed-form emitters reach 111 of the 159 transforms with no lookup
+table at all** — every camera log encoding, every ACES working space,
+sRGB and the gamma displays. `Lut1D` adds the remaining 20 and costs
+several times as much, because 34 of the 40 `Lut1D` ops are half-domain:
+65536 entries indexed by the float16 *bit pattern* of the input, which
+standard ONNX has no cast to reach. OCIO hits the same wall on GLSL 1.2
+and reconstructs the index arithmetically; the compiler follows its
+shaders rather than inventing a second answer.
+
+Vendor differences are **coefficients, not code**: RED Log3G10, ARRI
+LogC4, CanonLog3, Apple Log and BMDFilm are all one parametric
+`LogCamera` op with different numbers, which OCIO supplies. Adding a
+camera is a config update.
 
 `FixedFunction` — the ACES output transform and the Rec.2100 surround
 adjustment — is **refused by name at compile**, not approximated. Of the
@@ -67,9 +86,12 @@ artifact is a graph rather than a table.
 
 OCIO's own CPU processor is the oracle. Every emitted graph is
 property-tested against it over a generated input lattice, including
-out-of-range and breakpoint values. Coverage is asserted rather than
-sampled: every color space pair in a config either verifies within
-tolerance or refuses with a named op.
+out-of-range and breakpoint values, and must agree within 2e-5 absolute
+or 1e-4 relative, whichever is looser. Both bounds are needed: these
+transforms cross zero, where a relative measure is meaningless, and they
+also reach 1e8, where an absolute one is. Coverage is asserted rather
+than sampled — every color space pair in a config either verifies or
+refuses with a named op.
 
 ## Status
 

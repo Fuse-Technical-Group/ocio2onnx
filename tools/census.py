@@ -14,7 +14,8 @@ Run it against a new OCIO release to see what changed: a new op type shows up
 as a refusal rather than as silence. This is the measurement the specification
 quotes, not a separate estimate of it.
 
-Requires ``opencolorio``. Usage::
+Addressing lives in ``ocio2onnx.addressing``; this script only counts.
+Requires the package installed. Usage::
 
     python tools/census.py [config-uri]
 
@@ -29,10 +30,13 @@ import sys
 
 import PyOpenColorIO as OCIO
 
-#: The config the specification's numbers were measured against. Versioned
-#: deliberately: ``ocio://default`` moves between releases, so an artifact
-#: built against it cannot say what produced it (§spec:emitted-graph).
-DEFAULT_CONFIG = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
+from ocio2onnx.addressing import (
+    DEFAULT_CONFIG,
+    enumerate_transforms,
+    load_config,
+    op_names,
+    reference_space,
+)
 
 #: Ops the compiler emits directly (§spec:op-coverage). Everything else is
 #: refused by name rather than approximated.
@@ -49,14 +53,6 @@ SUPPORTED = frozenset(
 )
 
 
-def op_names(processor) -> list[str]:
-    """The op types a processor is built from, as bare names."""
-    return [
-        type(t).__name__.removesuffix("Transform")
-        for t in processor.createGroupTransform()
-    ]
-
-
 def sampled_textures(processor) -> tuple[int, int]:
     """``(1D, 3D)`` texture counts OCIO itself needs for this transform.
 
@@ -70,36 +66,17 @@ def sampled_textures(processor) -> tuple[int, int]:
     return len(list(desc.getTextures())), len(list(desc.get3DTextures()))
 
 
-def transforms(config, reference: str):
-    """Every transform worth measuring: each color space both ways against the
-    reference, then each display view."""
-    for space in config.getColorSpaces():
-        name = space.getName()
-        if name == reference:
-            continue
-        yield f"{name} -> ref", config.getProcessor(name, reference)
-        yield f"ref -> {name}", config.getProcessor(reference, name)
-
-    for display in config.getDisplays():
-        for view in config.getViews(display):
-            transform = OCIO.DisplayViewTransform()
-            transform.setSrc(reference)
-            transform.setDisplay(display)
-            transform.setView(view)
-            yield f"view {display}/{view}", config.getProcessor(transform)
-
-
 def main(argv: list[str]) -> int:
     uri = argv[1] if len(argv) > 1 else DEFAULT_CONFIG
-    config = OCIO.Config.CreateFromFile(uri)
-    reference = config.getCanonicalName(OCIO.ROLE_REFERENCE) or "ACES2065-1"
+    config = load_config(uri)
+    reference = reference_space(config)
 
     census: collections.Counter[str] = collections.Counter()
     needs_lut: list[tuple[str, int, int]] = []
     refused: list[tuple[str, set[str]]] = []
     total = 0
 
-    for label, processor in transforms(config, reference):
+    for label, processor in enumerate_transforms(config, reference):
         total += 1
         ops = op_names(processor)
         census.update(ops)

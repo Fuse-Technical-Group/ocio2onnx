@@ -45,7 +45,16 @@ one parametric `LogCamera` op with different numbers, which OCIO supplies.
 Adding a camera is a config update.
 
 `FixedFunction` — the ACES output transform and the Rec.2100 surround
-adjustment — is **refused by name at compile**, not approximated.
+adjustment — is **refused by name at compile**, not approximated. Of the
+159 transforms, 131 compile and 28 refuse; `Rec.2100-HLG - Display` is
+among the refusals, because HLG's surround adjustment is not a transfer
+curve.
+
+Reproduce any of this for a config of your choice:
+
+```sh
+python tools/census.py [config-uri]
+```
 
 ## Live parameters
 

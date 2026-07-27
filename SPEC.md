@@ -93,6 +93,15 @@ endpoints, rather than emitting a graph that is quietly wrong. *Why refuse
 rather than approximate*: an approximation of a display rendering
 transform is a picture nobody signed off on.
 
+**Refusal is by op, not by category.** 131 of the 159 transforms compile;
+28 refuse. Most are the ACES output transforms, where a caller expects it
+— but `Rec.2100-HLG - Display` refuses too, because HLG's surround
+adjustment is `REC2100_SURROUND` rather than a transfer curve. A consumer
+wanting plain HLG encoding is served; one wanting the ACES HLG display
+rendering is not. Stating the boundary as an op set rather than as "view
+transforms are unsupported" is what keeps that case from being a
+surprise. `tools/census.py` reports the split for any config.
+
 ## Verification §spec:verification
 *Status: not started*
 

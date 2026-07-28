@@ -4,6 +4,27 @@ Derived from SPEC.md. Every item traces to a spec gap. Sections are
 in build-dependency order. Completed work is removed; presence here
 means the work is not done.
 
+## Oracle evidence §road:oracle-evidence
+
+Close the gap between what the oracle compares and what it certifies
+(§spec:evidence-floor). Every workstream below is verified by this harness,
+so a blind spot in it is inherited by all of them — which is what puts it
+first, ahead of work that is larger and more visible.
+
+### Non-finite agreement and the evidence floor §road:nonfinite-agreement
+
+`oracle.compare` drops every sample where the reference is non-finite, then
+reports agreement when that leaves nothing compared: a config-declared
+matrix carrying NaN coefficients makes `ocio2onnx compile --verify` print
+`verified: 0 of 0 samples outside tolerance` over a 1248-sample lattice.
+Classify each non-finite sample as `+inf`, `-inf`, or NaN and require the
+graph's class to match the reference's, and require at least one finite
+comparison before a graph verifies (§spec:evidence-floor). Both the
+`--verify` flag and the `verify` sweep read the same predicate, so the
+partition over the pinned config is the regression test — 135 verified and
+24 refused, unchanged, with the 12 overflowing transforms now agreeing on
+their 36 non-finite samples rather than skipping them.
+
 ## Display rendering ops §road:display-rendering
 
 The `FixedFunction` style the compiler still refuses by name

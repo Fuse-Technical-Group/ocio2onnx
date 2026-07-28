@@ -97,7 +97,6 @@ class Comparison:
     rather than what survived a filter.
     """
 
-    ok: bool
     compared: int
     failures: int
     matched: int
@@ -106,10 +105,19 @@ class Comparison:
     max_rel: float
     worst: Worst | None
 
+    @property
+    def ok(self) -> bool:
+        """Every finite comparison inside the tolerance, every other sample on
+        the reference's class, and evidence that the finite kind occurred at
+        all (§spec:evidence-floor)."""
+        return self.failures == 0 and self.disagreed == 0 and self.compared > 0
+
     def __str__(self) -> str:
         parts = [
             f"{self.failures} of {self.compared} samples outside tolerance "
             f"(max abs {self.max_abs:.3g}, max rel {self.max_rel:.3g})"
+            if self.compared
+            else "no finite sample was compared, so nothing was established"
         ]
         if self.matched:
             parts.append(f"{self.matched} non-finite samples agreed on class")
@@ -118,8 +126,6 @@ class Comparison:
                 f"{self.disagreed} samples disagreed on class "
                 "(finite, +inf, -inf, and NaN are four distinct answers)"
             )
-        if not self.compared:
-            parts.append("no finite sample was compared, so nothing was established")
         if self.worst is not None:
             w = self.worst
             parts.append(
@@ -137,9 +143,13 @@ FINITE, POSITIVE_INFINITY, NEGATIVE_INFINITY, NOT_A_NUMBER = range(4)
 
 
 def classify(values: np.ndarray) -> np.ndarray:
-    """Which of the four classes each value falls in."""
+    """Which of the four classes each value falls in.
+
+    The labels carry no order or magnitude; they exist to be compared for
+    equality.
+    """
     return np.select(
-        [np.isfinite(values), np.isnan(values), values > 0],
+        [np.isfinite(values), np.isnan(values), values == np.inf],
         [FINITE, NOT_A_NUMBER, POSITIVE_INFINITY],
         default=NEGATIVE_INFINITY,
     )
@@ -225,9 +235,9 @@ def compare(
     if want.shape != got.shape:
         raise ValueError(f"reference is {want.shape}, graph output is {got.shape}")
 
-    agree = classify(want) == classify(got)
-    finite = np.isfinite(want) & agree
-    usable = np.flatnonzero(finite)
+    want_class = classify(want)
+    agree = want_class == classify(got)
+    usable = np.flatnonzero(agree & (want_class == FINITE))
 
     w = want.ravel()[usable]
     g = got.ravel()[usable]
@@ -250,14 +260,11 @@ def compare(
             relative=float(relative[k]),
         )
 
-    failures = int(over.sum())
-    disagreed = int((~agree).sum())
     return Comparison(
-        ok=failures == 0 and disagreed == 0 and usable.size > 0,
         compared=usable.size,
-        failures=failures,
-        matched=int(agree.sum()) - usable.size,
-        disagreed=disagreed,
+        failures=int(over.sum()),
+        matched=int((agree & (want_class != FINITE)).sum()),
+        disagreed=int((~agree).sum()),
         max_abs=float(deviation.max()) if deviation.size else 0.0,
         max_rel=float(relative.max()) if relative.size else 0.0,
         worst=worst,

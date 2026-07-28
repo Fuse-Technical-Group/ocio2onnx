@@ -1,8 +1,10 @@
 """``Lut1D`` emits a gather and a lerp over a table (§spec:op-emission).
 
-Forward only. An inverse op runs the table backwards, is refused here, and is
-lifted by its own workstream, so a transform carrying one is an answer rather
-than a crash.
+An inverse op runs the table backwards, which the graph never does: the table
+is inverted once, at compile time, onto the half domain, and the graph reads
+the result as an ordinary forward half-domain table. So there is one gather
+for both directions, and the inversion's own decisions — the grid, and what a
+flat stretch of the forward table inverts to — are what these tests pin.
 
 Two domains reach the same gather, and only the index separates them. A
 uniform table's index is OCIO's ``clip(x, 0, 1) * (length - 1)``. A
@@ -30,17 +32,32 @@ from onnx import numpy_helper
 from ocio2onnx import emitters
 from ocio2onnx.builder import INPUT, GraphBuilder
 from ocio2onnx.emitters import UnsupportedOpError
-from ocio2onnx.oracle import compare, cpu_reference, lattice, run_graph
+from ocio2onnx.oracle import TOLERANCE, compare, cpu_reference, lattice, run_graph
 
 LUT1D = "Lut1DTransform"
 REFERENCE = "ACES2065-1"
 
 #: The three color spaces whose forward direction carries a uniform table.
-#: Their inverse direction carries the same table backwards and is refused.
+#: Their inverse direction carries the same table backwards.
 UNIFORM_SPACES = (
     "ACEScc",
     "CanonLog2 CinemaGamut D55",
     "CanonLog3 CinemaGamut D55",
+)
+
+#: The eight pairs whose ``Lut1D`` arrives inverse — the transforms this
+#: workstream unblocks. The ninth inverse op in the config sits in
+#: ``Rec.2100-HLG - Display -> ref``, which refuses on ``FixedFunction``
+#: whatever this emitter does.
+INVERSE_PAIRS = (
+    ("Rec.2100-PQ - Display", REFERENCE),
+    ("ST2084-P3-D65 - Display", REFERENCE),
+    (REFERENCE, "ACEScc"),
+    (REFERENCE, "ADX10"),
+    (REFERENCE, "ADX16"),
+    (REFERENCE, "Apple Log"),
+    (REFERENCE, "CanonLog2 CinemaGamut D55"),
+    (REFERENCE, "CanonLog3 CinemaGamut D55"),
 )
 
 #: Five pairs whose forward direction carries a half-domain table: two display
@@ -85,6 +102,18 @@ SLOT_STRIDE = 331
 #: Short enough to read in a failure, long enough that a slot is not the whole
 #: domain.
 SYNTHETIC_LENGTH = 32
+
+#: Where a flat stretch of a forward table inverts to, read off OCIO's own
+#: inverse rather than chosen. ``ref -> Apple Log`` decodes every input from
+#: -65504 up to 0 as -0.0564109, and OCIO answers that value with 0 — the top
+#: of the flat stretch, not its bottom. ``ref -> ADX10`` encodes everything
+#: from 3.7597656 up as 4.816268, and OCIO answers that value with 3.7597656 —
+#: the bottom of that one. Both are the endpoints of the interval the table is
+#: invertible over, which is what the inversion has to clamp to.
+FLAT_TAILS = (
+    ((REFERENCE, "Apple Log"), -65504.0, 0.0),
+    ((REFERENCE, "ADX10"), 65504.0, 3.7597656),
+)
 
 
 def synthetic(length=SYNTHETIC_LENGTH, curves=None, **kwargs):
@@ -156,6 +185,16 @@ def half_domain_lut(op_in):
     table comes back with the wrong sign rather than merely the wrong value.
     """
     return op_in(LUT1D, *HALF_DOMAIN_PAIRS[0])
+
+
+@pytest.fixture(scope="session")
+def inverse_lut(op_in):
+    """The inverse table ``Rec.2100-PQ - Display -> ref`` carries.
+
+    The same odd-symmetric curve as ``half_domain_lut``, run backwards, so the
+    two directions are testable against each other.
+    """
+    return op_in(LUT1D, *INVERSE_PAIRS[0])
 
 
 @pytest.fixture
@@ -449,19 +488,147 @@ def test_a_forward_half_domain_lut_is_emitted_rather_than_refused(config_ops):
     assert emit(synthetic(HALF_DOMAIN_LENGTH, inputHalfDomain=True))
 
 
-def test_an_inverse_lut_is_refused(op_in):
-    """Both domains, in both the bare and the configured form. Direction is
-    the one shape left, and its own workstream."""
-    bare = synthetic()
-    bare.setDirection(OCIO.TRANSFORM_DIR_INVERSE)
-    transforms = (
-        bare,
-        op_in(LUT1D, REFERENCE, UNIFORM_SPACES[0]),
-        op_in(LUT1D, REFERENCE, "Apple Log"),
+def test_an_inverse_lut_is_emitted_rather_than_refused(config_ops):
+    """The refusal this workstream lifted. Every inverse op in the pinned
+    config emits, including the one inside a transform that refuses anyway, so
+    the monotonicity guard is measured against all nine rather than eight."""
+    inverse = [
+        transform
+        for transform in config_ops(LUT1D)
+        if str(transform.getDirection()).endswith("INVERSE")
+    ]
+    assert len(inverse) == INVERSE_OPS
+    for transform in inverse:
+        assert emit(transform)
+
+
+@pytest.mark.parametrize(("src", "dst"), INVERSE_PAIRS)
+def test_a_transform_carrying_an_inverse_lut_verifies(src, dst, config, check):
+    """The eight transforms this workstream unblocks, end to end."""
+    result = check(config.getProcessor(src, dst), f"{src} -> {dst}")
+    assert result.ok, str(result)
+    assert result.compared > 0
+
+
+@pytest.mark.parametrize(("src", "dst"), INVERSE_PAIRS)
+def test_the_inverse_lut_op_alone_verifies(src, dst, op_in, check_transform):
+    result = check_transform(op_in(LUT1D, src, dst))
+    assert result.ok, str(result)
+
+
+def test_an_input_between_two_half_slots_verifies_the_inverse_direction(
+    inverse_lut, check_at
+):
+    """The section's acceptance criterion, in the direction this workstream
+    added. An inverse is emitted as a half-domain table, so it meets the same
+    sub-slot inputs the forward direction does and must interpolate across
+    them the same way."""
+    result = check_at(
+        inverse_lut,
+        between_slots(walk_slots(FIRST_NORMAL_SLOT, LAST_FINITE_SLOT)),
     )
-    for transform in transforms:
-        with pytest.raises(UnsupportedOpError, match="inverse"):
-            emit(transform)
+    assert result.ok, str(result)
+    assert result.compared > 0
+
+
+@pytest.mark.parametrize(
+    ("src", "dst"), ((REFERENCE, "ACEScc"), (REFERENCE, "Rec.2100-PQ - Display"))
+)
+def test_the_inverse_undoes_the_forward(src, dst, config, compile_bare, row):
+    """Compile both directions and compose them. Neither graph knows about the
+    other, so a table inverted onto the wrong grid, or read off by a slot,
+    comes back as a value that is not the input.
+
+    Both round trips start scene-linear and stay under diffuse white, because
+    that is where both encodings are invertible: ``ACEScc`` clamps its code
+    value at 1 and the PQ display clamps its own, and a clamp does not undo.
+    """
+    values = [1e-3, 0.0078125, 0.18, 1.0]
+    samples = row(*values)
+    forward = run_graph(compile_bare(config.getProcessor(src, dst)), samples)
+    back = run_graph(compile_bare(config.getProcessor(dst, src)), forward)
+    assert back.ravel()[: len(values)] == pytest.approx(values, rel=1e-4, abs=2e-5)
+
+
+@pytest.mark.parametrize(("pair", "value", "want"), FLAT_TAILS)
+def test_a_flat_stretch_inverts_to_where_the_forward_table_leaves_it(
+    pair, value, want, config, compile_bare, op_in, row
+):
+    """A flat run makes the inverse ambiguous over an interval, and the two
+    ends of that interval are half a domain apart. OCIO answers with the end
+    the curve leaves the run at — the invertible interval's edge — and the
+    graph has to agree with it, not merely be inside the run."""
+    transform = op_in(LUT1D, *pair)
+    processor = config.getProcessor(transform)
+    samples = row(value)
+    assert float(cpu_reference(processor, samples).ravel()[0]) == pytest.approx(want)
+    got = float(run_graph(compile_bare(processor), samples).ravel()[0])
+    assert got == pytest.approx(want, rel=1e-4, abs=2e-5)
+
+
+def test_an_inverse_is_sampled_onto_the_half_domain(config, compile_bare, op_in):
+    """The grid, pinned. A uniform forward table inverts to 65536 entries, not
+    back to its own 4096: the inversion grid is the half domain whichever
+    domain the forward table had, because a half's spacing is geometric and so
+    carries the same relative resolution in the toe as at the top
+    (§spec:op-emission)."""
+    for src, dst in (INVERSE_PAIRS[0], (REFERENCE, UNIFORM_SPACES[0])):
+        transform = op_in(LUT1D, src, dst)
+        assert emitters.lut1d_inverse_table(transform).shape == (
+            HALF_DOMAIN_LENGTH,
+            3,
+        )
+        model = compile_bare(config.getProcessor(transform))
+        assert table_of(model).shape == (HALF_DOMAIN_LENGTH,)
+
+
+def test_a_uniform_inversion_grid_would_not_hold_tolerance(op_in):
+    """Why the grid is the half domain and not the obvious alternative.
+
+    ``ACEScc``'s forward table spans [-5.7e-07, 96617.7]. A uniform grid over
+    that range spends its samples above middle grey and leaves the whole toe
+    to one interval, so resampling the inverse onto it loses the part of the
+    picture a grade reaches for. Adding samples does not fix it: 65536 uniform
+    samples are barely better than 4096, because the problem is the dynamic
+    range rather than the count.
+
+    Kept cheap and kept here so the rejected alternative stays rejected on
+    evidence. §spec:op-emission records the whole measurement: over the
+    lattices of all eight transforms carrying an inverse, a uniform grid
+    misses 2267 of 10134 samples where the half domain misses none.
+    """
+    transform = op_in(LUT1D, REFERENCE, UNIFORM_SPACES[0])
+    values = emitters.lut1d_table(transform)[:, 0].astype(np.float64)
+    domain = np.linspace(0.0, 1.0, values.size)
+    probes = np.array([1e-3, 0.0078125, 0.18, 1.0, 10.0])
+    want = np.interp(probes, values, domain)
+
+    for count in (UNIFORM_LENGTH, HALF_DOMAIN_LENGTH):
+        grid = np.linspace(values[0], values[-1], count)
+        got = np.interp(probes, grid, np.interp(grid, values, domain))
+        assert (np.abs(got - want) > TOLERANCE.bound(want)).all()
+        assert np.abs(got - want).max() > 0.3
+
+    grid = HALF_SLOTS[:LAST_FINITE_SLOT].astype(np.float64)
+    got = np.interp(probes, grid, np.interp(grid, values, domain))
+    assert (np.abs(got - want) <= TOLERANCE.bound(want)).all()
+
+
+def test_a_table_that_does_not_rise_is_refused():
+    """A non-monotonic table has no inverse to read off, so it is refused
+    rather than resolved to whichever branch a sort happened to keep."""
+    lut = synthetic(curves=((lambda x: (x - 0.5) ** 2),) * 3)
+    lut.setDirection(OCIO.TRANSFORM_DIR_INVERSE)
+    with pytest.raises(UnsupportedOpError, match="does not rise"):
+        emit(lut)
+
+
+def test_the_monotonicity_guard_reads_the_pinned_configs_tables_as_rising(op_in):
+    """``+0.0`` and ``-0.0`` compare equal, so a half-domain table holds two
+    entries at domain zero and a naive difference reads the step between them
+    as a fall. Both PQ tables would refuse on that, and both are fine."""
+    for src, dst in INVERSE_PAIRS[:2]:
+        assert emit(op_in(LUT1D, src, dst))
 
 
 @pytest.mark.parametrize("interpolation", ("NEAREST", "BEST"))
@@ -494,6 +661,15 @@ def test_a_half_domain_lut_declares_the_branches_its_index_has():
     the float16 line. Zero is where the sign offset switches and 2**-14 is
     where the denormal case joins the normal one."""
     lut = synthetic(HALF_DOMAIN_LENGTH, inputHalfDomain=True)
+    assert emitters.breakpoints(lut) == [0.0, 2.0**-14, -(2.0**-14)]
+
+
+def test_an_inverse_uniform_lut_declares_the_branches_the_half_index_has():
+    """It reaches the graph as a half-domain table whatever domain it was
+    written over, so the lattice has to straddle the half index's branches
+    rather than the unit interval the forward table used."""
+    lut = synthetic()
+    lut.setDirection(OCIO.TRANSFORM_DIR_INVERSE)
     assert emitters.breakpoints(lut) == [0.0, 2.0**-14, -(2.0**-14)]
 
 

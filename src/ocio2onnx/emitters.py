@@ -70,6 +70,26 @@ HALF_SIGN = 32768.0
 #: is ``HALF_BINADE / HALF_NORMAL_MIN``.
 HALF_DENORMAL_SCALE = HALF_BINADE / HALF_NORMAL_MIN
 
+#: Slots in a half-domain table: one per float16 bit pattern.
+HALF_SLOT_COUNT = 1 << 16
+
+#: The input value each slot of a half-domain table stands for, which is that
+#: table's domain. 2048 of the patterns are infinities and NaNs.
+HALF_SLOT_VALUES = (
+    np.arange(HALF_SLOT_COUNT, dtype=np.uint16).view(np.float16).astype(np.float64)
+)
+
+#: The grid an inverse ``Lut1D`` is sampled onto (§spec:op-emission): the half
+#: domain, with the non-finite patterns pulled to the finite limit of their own
+#: sign. ``_half_domain_index`` clips a magnitude to ``HALF_MAX``, so nothing
+#: reaches those slots, and an entry no input can read is better finite than
+#: NaN.
+INVERSE_GRID = np.where(
+    np.isfinite(HALF_SLOT_VALUES),
+    HALF_SLOT_VALUES,
+    np.copysign(HALF_MAX, HALF_SLOT_VALUES),
+)
+
 #: The finite limit a ``Lut1D`` entry is held at. OCIO reports an entry beyond
 #: float32 as an infinity but its CPU processor renders the finite limit —
 #: measured on ``Apple Log``, whose decode overflows from slot 18898 up, where
@@ -644,20 +664,98 @@ def lut1d_table(transform: Any) -> np.ndarray:
     return np.clip(values, -LUT1D_ENTRY_MAX, LUT1D_ENTRY_MAX).astype(np.float32)
 
 
+def lut1d_domain(transform: Any) -> np.ndarray:
+    """The input value each of a table's entries stands for.
+
+    A uniform table's is a position in the unit interval, which is how
+    ``_uniform_index`` reads one. A half domain's is the value of the slot's
+    own bit pattern.
+    """
+    if transform.getInputHalfDomain():
+        return HALF_SLOT_VALUES
+    return np.linspace(*LUT1D_DOMAIN, transform.getLength())
+
+
+def _refuse_falling_lut1d(domain: np.ndarray, values: np.ndarray) -> None:
+    """Refuse a table with no inverse this reading can take.
+
+    Read over strictly increasing domain steps only. ``+0.0`` and ``-0.0``
+    compare equal, so a half-domain table holds two entries at domain zero and
+    a plain difference reads the step between them as a fall — which is what
+    both PQ tables would refuse on, though they rise across every step their
+    domain actually takes.
+    """
+    if (np.diff(values)[np.diff(domain) > 0] >= 0.0).all():
+        return
+    raise UnsupportedOpError(
+        "an inverse Lut1D whose table does not rise is not emitted by this "
+        "compiler; it inverts a non-decreasing table"
+    )
+
+
+def _invert_channel(domain: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """One channel's forward curve, read backwards onto ``INVERSE_GRID``.
+
+    Pairs with a non-finite side drop out, which is the 2048 half patterns
+    that are not values. ``Apple Log``'s decode is not among them: it
+    overflows float32 from slot 18898 up, and ``lut1d_table`` holds an
+    overflowing entry at ``LUT1D_ENTRY_MAX``, so it arrives here as a flat run
+    rather than as missing pairs.
+
+    Where the table is flat the inverse is ambiguous across a whole interval,
+    so each run of equal values collapses to the domain the curve *leaves* it
+    at — the lowest run's largest domain, every other run's smallest. What is
+    left is the interval the table is invertible over, and outside it
+    ``np.interp`` clamps to the same two endpoints OCIO does. Measured rather
+    than reasoned: OCIO answers -65504 with 0 for ``ref -> Apple Log``, whose
+    decode is flat across [-65504, 0], and 65504 with 3.7597656 for
+    ``ref -> ADX10``, whose is flat across [3.7597656, 65504]. Taking the same
+    end of every run puts one of those two half a domain out.
+    """
+    finite = np.isfinite(domain) & np.isfinite(values)
+    order = np.argsort(domain[finite], kind="stable")
+    d, v = domain[finite][order], values[finite][order]
+    _refuse_falling_lut1d(d, v)
+
+    starts = np.flatnonzero(np.concatenate([[True], np.diff(v) > 0.0]))
+    keep = starts.copy()
+    keep[0] = starts[1] - 1 if starts.size > 1 else v.size - 1
+    return np.interp(INVERSE_GRID, v[keep], d[keep])
+
+
+def lut1d_inverse_table(transform: Any) -> np.ndarray:
+    """A monotonic ``Lut1D``, inverted at compile time (§spec:op-emission).
+
+    The result is an ordinary forward half-domain table, so the graph reads it
+    with the gather and lerp it already has and searches nothing at run time.
+
+    The grid is the half domain whichever domain the forward table used. Its
+    spacing is geometric, so it holds the same relative resolution in the toe
+    as at the top — which is the shape a log-encoded curve has. A uniform grid
+    over the forward table's output range does not: those ranges are enormous
+    (``ACEScc`` spans [-5.7e-07, 96617.7]), so a uniform grid spends its
+    samples above middle grey and leaves the toe to a single interval
+    (§spec:op-emission).
+    """
+    domain = lut1d_domain(transform)
+    table = lut1d_table(transform)
+    return np.stack(
+        [
+            _invert_channel(domain, table[:, channel].astype(np.float64))
+            for channel in range(CHANNELS)
+        ],
+        axis=1,
+    ).astype(np.float32)
+
+
 def _refuse_unemitted_lut1d(transform: Any) -> None:
     """Refuse the ``Lut1D`` shapes this compiler has no path for.
 
-    Each would change the result rather than degrade it. An inverse op runs
-    the table backwards, which is its own workstream (§spec:op-emission). The
-    remaining three redefine what a slot means, and none occurs in the pinned
-    config — so, following ``_negative_style``, an unrecognised one is refused
-    rather than approximated by the reading this emitter does implement.
+    Each would change the result rather than degrade it. All three redefine
+    what a slot means, and none occurs in the pinned config — so, following
+    ``_negative_style``, an unrecognised one is refused rather than
+    approximated by the reading this emitter does implement.
     """
-    if _is_inverse(transform):
-        raise UnsupportedOpError(
-            "an inverse Lut1D is not emitted by this compiler; it emits the "
-            "forward direction"
-        )
     interpolation = _enum_member(transform.getInterpolation(), "INTERP_")
     if interpolation not in LUT1D_INTERPOLATIONS:
         raise UnsupportedOpError(
@@ -685,12 +783,16 @@ def lut1d_breakpoints(transform: Any) -> list[float]:
     interval — and its branches are elsewhere: zero, where the sign offset
     switches, and ``±2**-14``, where the denormal reading joins the normal one.
 
+    An inverse op reaches the graph as a half-domain table whatever domain it
+    was written over (``lut1d_inverse_table``), so its branches are the half
+    index's rather than the forward table's.
+
     Not the slot boundaries in between: there are tens of thousands, they would
     swamp the lattice, and the lerp is continuous across every one. A
     breakpoint is declared where a misreading would put a sample on the wrong
     branch, and a slot boundary has no branch.
     """
-    if transform.getInputHalfDomain():
+    if transform.getInputHalfDomain() or _is_inverse(transform):
         return [0.0, HALF_NORMAL_MIN, -HALF_NORMAL_MIN]
     return list(LUT1D_DOMAIN)
 
@@ -821,12 +923,17 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
     path folds the index into a 4096-by-17 texture because texture widths cap
     below 65536; an ONNX initializer has no such limit, so neither the packing
     nor its stride carries over.
+
+    An inverse op inverts here, once, and emits as a forward half-domain table
+    (``lut1d_inverse_table``). Direction costs no second code path in the
+    graph and no search at run time.
     """
     _refuse_unemitted_lut1d(transform)
-    table = lut1d_table(transform)
+    inverse = _is_inverse(transform)
+    table = lut1d_inverse_table(transform) if inverse else lut1d_table(transform)
     length = table.shape[0]
 
-    if transform.getInputHalfDomain():
+    if inverse or transform.getInputHalfDomain():
         position, offset = _half_domain_index(builder, x)
     else:
         position, offset = _uniform_index(builder, x, length)

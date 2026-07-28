@@ -39,19 +39,17 @@ ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 #: A closed-form display view.
 OPEN_VIEW = ("sRGB - Display", "Un-tone-mapped")
 
-#: The partition ``verify`` reproduces today: the 111 closed-form transforms
-#: §spec:op-coverage measured, plus the 12 whose ``Lut1D`` is forward, over
-#: either domain. The inverse workstream takes this to 131.
-VERIFIED = 123
-REFUSED = 36
+#: The partition ``verify`` reproduces: the 111 closed-form transforms
+#: §spec:op-coverage measured, plus the 20 carrying a ``Lut1D`` over either
+#: domain in either direction. What is left refuses on ``FixedFunction``.
+VERIFIED = 131
+REFUSED = 28
 TOTAL = 159
 
-#: How the one refusal the ``Lut1D`` emitter still raises is counted. The
-#: census cannot see it: direction is a parameter of a registered op, so the
-#: census refuses the ``FixedFunction`` transforms alone where ``verify``
-#: refuses 36.
-INVERSE_REFUSALS = "8  an inverse Lut1D"
-CENSUS_REFUSED = 28
+#: ``verify`` and the census now refuse the same transforms. They did not
+#: while the ``Lut1D`` emitter refused a direction: direction is a parameter
+#: of a registered op, so the census counted 28 where ``verify`` counted 36.
+CENSUS_REFUSED = REFUSED
 
 
 @pytest.fixture
@@ -246,7 +244,7 @@ def test_verify_partitions_the_whole_config_with_nothing_skipped(capsys):
 
     assert f"24  {ACES_STYLE}" in printed
     assert "5  FixedFunction[REC2100_SURROUND]" in printed
-    assert INVERSE_REFUSALS in printed
+    assert "Lut1D" not in printed
     assert "worst deviation" in printed
 
 

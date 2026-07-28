@@ -21,9 +21,10 @@ from ocio2onnx.emitters import REGISTRY, UnsupportedOpError, op_label, supported
 #: The pair the compiler emits.
 PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 
-#: A pair whose op list holds nothing unimplemented, and whose ``Lut1D``
-#: arrives inverse — a refusal only the emitter can raise.
-INVERSE_LUT_PAIR = ("ACES2065-1", "Apple Log")
+#: A hue adjustment the ``Lut1D`` emitter has no path for. ``Lut1D`` is
+#: registered, so an op list sees nothing wrong — a refusal only the emitter
+#: can raise.
+LUT_HUE_ADJUST = OCIO.HUE_DW3
 
 #: The display view the compiler refuses, and the style that blocks it.
 ACES_VIEW = ("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
@@ -91,11 +92,18 @@ def test_the_refusal_names_the_fixed_function_style(resolve):
 
 def test_a_refusal_an_op_list_cannot_see_is_raised_at_emission(config):
     """``Lut1D`` is registered, so the op list passes this transform; the
-    emitter refuses its direction on reading the op. A caller meets one
+    emitter refuses a parameter of it on reading the op. A caller meets one
     refusal, whichever layer raised it."""
-    resolved = resolve_colorspaces(config, *INVERSE_LUT_PAIR, uri=DEFAULT_CONFIG)
+    lut = OCIO.Lut1DTransform(length=2)
+    lut.setHueAdjust(LUT_HUE_ADJUST)
+    resolved = Resolved(
+        processor=config.getProcessor(lut),
+        config_name=config.getName(),
+        config_uri=DEFAULT_CONFIG,
+        endpoints="bare",
+    )
     assert unsupported_ops(resolved.processor) == []
-    with pytest.raises(UnsupportedOpError, match="inverse"):
+    with pytest.raises(UnsupportedOpError, match="hue adjust"):
         compile_processor(resolved)
 
 

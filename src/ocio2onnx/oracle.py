@@ -22,13 +22,13 @@ from ocio2onnx.builder import INPUT
 from ocio2onnx.compiler import compile_processor
 
 #: OCIO's default CPU optimization includes ``OPTIMIZATION_FAST_LOG_EXP_POW``,
-#: an approximate ``pow``/``log``/``exp`` whose error reaches 2.5e-3 relative —
-#: two orders of magnitude above the verification tolerance. Measured across
-#: the pinned config: with it, 110 of 111 closed-form transforms verify and
-#: the worst relative error is 2.46e-3; without it, 111 of 111 verify and the
-#: worst is 2.66e-5, which is genuine float32 executor difference. The oracle
-#: must be the accurate reference, not OCIO's fast path, so the flag is
-#: cleared. This is a correctness decision, not a tuning knob.
+#: an approximate ``pow``/``log``/``exp``. Its error exceeds the verification
+#: tolerance, so leaving it on measures a math library rather than the
+#: compiler's reading of the config: across the pinned config 110 of the 111
+#: closed-form transforms verify against OCIO's fast path, and 111 of 111
+#: verify against its accurate one. The oracle must be the accurate reference,
+#: so the flag is cleared. This is a correctness decision, not a tuning knob;
+#: ``tests/test_oracle.py`` pins it.
 OPTIMIZATION_FLAGS = OCIO.OptimizationFlags(
     OCIO.OPTIMIZATION_DEFAULT.value & ~OCIO.OPTIMIZATION_FAST_LOG_EXP_POW.value
 )

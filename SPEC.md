@@ -29,7 +29,7 @@ time. OCIO remains the authority for what a transform *is*; this project
 only changes what it can be executed by.
 
 ## What the compiler emits §spec:emitted-graph
-*Status: not started*
+*Status: complete*
 
 A single ONNX graph per transform: a channels-first float image tensor in,
 the same shape out, with spatial dimensions free so one graph serves every
@@ -62,7 +62,7 @@ consumers who want OCIO in-process, where this project serves consumers
 who want the transform as a portable artifact.
 
 ## Op coverage §spec:op-coverage
-*Status: not started*
+*Status: in progress*
 
 Coverage is measured, not assumed. Across
 `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` — every color space in both
@@ -147,10 +147,12 @@ adjustment is `REC2100_SURROUND` rather than a transfer curve. A consumer
 wanting plain HLG encoding is served; one wanting the ACES HLG display
 rendering is not. Stating the boundary as an op set rather than as "view
 transforms are unsupported" is what keeps that case from being a
-surprise. `tools/census.py` reports the split for any config.
+surprise. `ocio2onnx census` reports the split for any config, against the
+op set the compiler actually implements rather than a second list beside
+it; `tools/census.py` is a shim over the same code.
 
 ## How ops emit §spec:op-emission
-*Status: not started*
+*Status: in progress*
 
 Every op emits as ONNX arithmetic over parameters read from OCIO's
 transform introspection. `Matrix` is a 1×1 convolution, `Range` a clamp
@@ -201,7 +203,7 @@ defining a transform, which §spec:non-goals forbids, and would read as
 error against the oracle.
 
 ## Verification §spec:verification
-*Status: not started*
+*Status: complete*
 
 OCIO's CPU processor is the oracle. For every transform the compiler
 claims to support, a test generates an input lattice — including values
@@ -250,7 +252,7 @@ rather than values, so they arrive with a tensor-valued input or not at
 all.
 
 ## Precision §spec:precision
-*Status: not started*
+*Status: complete*
 
 The graph is emitted at float32 and declares that. A log or exponential
 chain evaluated at float16 loses accuracy where the curve is steepest,

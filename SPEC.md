@@ -371,7 +371,7 @@ every sample is checked one way or the other, the only quantity left worth
 asserting is that the finite kind occurred at all.
 
 ## Dynamic properties §spec:dynamic-properties
-*Status: in progress*
+*Status: complete*
 
 OCIO exposes seven dynamic property types — `EXPOSURE`, `CONTRAST`,
 `GAMMA`, and four `GRADING_*` families — plus ASC CDL as slope, offset,
@@ -386,10 +386,19 @@ transform with its parameters left free.
 The scalar and per-channel properties emit. `ExposureContrast` carries
 `EXPOSURE`, `CONTRAST`, and `GAMMA`, spelled as OCIO's own property types
 spell them; a CDL carries `CDL_SLOPE`, `CDL_OFFSET`, `CDL_POWER`, and
-`CDL_SATURATION`. The curve-shaped `GRADING_*` families are deferred: their
-parameters are control points rather than values, so they arrive with a
-tensor-valued input or not at all, and until then they refuse by the same
-mechanism as any unimplemented op (§spec:op-coverage).
+`CDL_SATURATION`.
+
+**The four curve-shaped `GRADING_*` families are deferred, and the deferral is
+the shipped behaviour.** Their parameters are control points rather than
+values, so they arrive with a tensor-valued input or not at all — a different
+interface from the scalars above, and one nothing has yet asked for. The
+trigger is the first consumer that needs curve-based grading rather than CDL.
+Until it fires, each of the four refuses by name, by the same mechanism as any
+unimplemented op, at the command line and in the census (§spec:op-coverage).
+Pinned by test rather than left as an intention: a deferral whose edge a caller
+cannot see is indistinguishable from a wrong answer, and `GradingHueCurve`
+arrived in OCIO 2.5 without a line of this compiler changing — which is what
+deriving the refusal from the emitter registry buys.
 
 **The value decides what is live; OCIO's flag decides only what the value
 cannot.** OCIO's declaration governs its own run-time plumbing — one dynamic

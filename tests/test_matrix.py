@@ -15,7 +15,6 @@ from ocio2onnx import emitters
 from ocio2onnx.addressing import (
     IMAGE_SHAPE,
     METADATA_PREFIX,
-    Resolved,
     enumerate_transforms,
     op_names,
     resolve_colorspaces,
@@ -57,31 +56,18 @@ def emit(transform):
     return builder.build(output, "matrix", {})
 
 
-def compile_bare(processor, uri):
-    """Compile a processor the sweep discovered rather than resolved."""
-    return compile_processor(
-        Resolved(
-            processor=processor,
-            config_name="sweep",
-            config_uri=uri,
-            endpoints="sweep",
-        )
-    )
-
-
 def test_the_registry_carries_matrix_and_its_breakpoint_hook():
     entry = emitters.REGISTRY["MatrixTransform"]
     assert entry.emit is emitters.emit_matrix
     assert entry.breakpoints(OCIO.MatrixTransform()) == []
 
 
-def test_only_matrix_is_registered_in_this_workstream():
-    assert set(emitters.REGISTRY) == {"MatrixTransform"}
-
-
 def test_an_unregistered_transform_yields_no_emitter():
-    assert emitters.emitter_for(OCIO.ExponentTransform()) is None
-    assert emitters.breakpoints(OCIO.ExponentTransform()) == []
+    unregistered = OCIO.FixedFunctionTransform(
+        OCIO.FIXED_FUNCTION_REC2100_SURROUND, [1.0]
+    )
+    assert emitters.emitter_for(unregistered) is None
+    assert emitters.breakpoints(unregistered) == []
 
 
 def test_matrix_emits_a_1x1_convolution():
@@ -196,13 +182,10 @@ def test_the_pinned_config_holds_the_counted_matrix_only_transforms(matrix_only)
     assert len(matrix_only) == MATRIX_ONLY
 
 
-def test_every_matrix_only_transform_verifies(matrix_only, config_uri):
-    failures = []
-    for label, processor in matrix_only:
-        samples = lattice(processor)
-        want = cpu_reference(processor, samples)
-        got = run_graph(compile_bare(processor, config_uri), samples)
-        result = compare(want, got, samples)
-        if not result.ok:
-            failures.append(f"{label}: {result}")
+def test_every_matrix_only_transform_verifies(matrix_only, check):
+    failures = [
+        f"{label}: {result}"
+        for label, processor in matrix_only
+        if not (result := check(processor, label)).ok
+    ]
     assert not failures, "\n".join(failures)

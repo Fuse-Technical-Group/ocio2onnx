@@ -30,6 +30,13 @@ from ocio2onnx.builder import GraphBuilder
 #: nothing a consumer can feed the graph reaches it.
 UNBOUNDED = 1e30
 
+#: The floor OCIO's own ``Log`` op holds its argument at, so ``log(0)`` never
+#: reaches an output. Measured against the CPU processor: OCIO returns
+#: -37.9298 for log10 of any non-positive input, which is log10 of the
+#: smallest normal float32. A rounder floor — 1e-30, say — would sit nearly 8
+#: units from the reference at the first non-positive input.
+LOG_FLOOR = float(np.finfo(np.float32).tiny)
+
 #: How OCIO's negative-value styles are named, with the enum prefix dropped.
 MIRROR = "MIRROR"
 PASS_THRU = "PASS_THRU"
@@ -370,3 +377,28 @@ def emit_exponent_with_linear(builder: GraphBuilder, transform: Any, x: str) -> 
 
     y = builder.where(builder.op("Less", [source, breaks]), linear, curved)
     return builder.mul(builder.op("Sign", [x]), y) if style == MIRROR else y
+
+
+def log_breakpoints(transform: Any) -> list[float]:
+    """Zero, where the forward clamp engages. The inverse evaluates one
+    expression over the whole line and declares none."""
+    return [] if _is_inverse(transform) else [0.0]
+
+
+@register("LogTransform", breakpoints=log_breakpoints)
+def emit_log(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """``log(x)/log(base)`` forward, ``base ** x`` inverse.
+
+    The forward clamp is read off OCIO rather than chosen: OCIO's own op holds
+    its argument at ``LOG_FLOOR``, so an input at or below zero leaves with a
+    definite value rather than an infinity. A rounder floor would sit whole
+    units away from the reference at the first non-positive input.
+    """
+    base = float(transform.getBase())
+    if _is_inverse(transform):
+        return builder.pow(builder.scalar("log_base", base), x)
+    argument = builder.op("Clip", [x, builder.scalar("log_floor", LOG_FLOOR)])
+    return builder.mul(
+        builder.op("Log", [argument]),
+        builder.scalar("log_scale", 1.0 / math.log(base)),
+    )

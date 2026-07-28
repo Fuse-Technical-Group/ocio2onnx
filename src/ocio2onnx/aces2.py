@@ -48,6 +48,17 @@ F32 = np.float32
 #: Chromaticities as OCIO names them: red, green, blue, white, each ``(x, y)``.
 Primaries = tuple[tuple[float, float], ...]
 
+
+class UnsupportedTransformError(ValueError):
+    """A parameterisation this module will not expand.
+
+    Raised rather than returned because there is nothing partial to hand back.
+    ``emitters`` translates it into the refusal a caller already handles, which
+    is why it is a distinct type and not ``UnsupportedOpError`` itself:
+    ``emitters`` imports this module, so this module cannot import back.
+    """
+
+
 #: The colour space the transform reads. Fixed: OCIO's renderer builds the
 #: input side from ACES AP0 whatever the op's parameters say.
 AP0: Primaries = ((0.7347, 0.2653), (0.0, 1.0), (0.0001, -0.077), (0.32168, 0.33767))
@@ -584,11 +595,12 @@ def _ocio_tables(transform: Any) -> tuple[np.ndarray, np.ndarray]:
             if key in texture.textureName:
                 found[key] = np.asarray(texture.getValues(), dtype=np.float32)
     if set(found) != {"reach_m_table", "gamut_cusp_table"}:
-        raise LookupError(
+        raise UnsupportedTransformError(
             "OCIO published no reach and gamut cusp tables for "
             "ACES_OUTPUT_TRANSFORM_20; this compiler reads both off its shader "
             f"description and found {sorted(found)}"
         )
+
     return found["reach_m_table"], found["gamut_cusp_table"].reshape(-1, 3)
 
 
@@ -627,8 +639,25 @@ class OutputTransform:
 
 
 def output_transform(transform: Any) -> OutputTransform:
-    """Resolve one op's nine parameters into everything its graph needs."""
+    """Resolve one op's nine parameters into everything its graph needs.
+
+    The eight chromaticities are checked here because nothing else checks them.
+    OCIO validates the peak luminance and stops: a config declaring a NaN
+    chromaticity passes its ``validate()``, and building any ACES 2.0 renderer
+    for one then reads out of bounds inside OCIO's own hull construction —
+    measured as a segmentation fault on 5 of 12 identical runs, which is the
+    signature of a heap-layout-dependent overrun rather than a bad answer.
+
+    That is reachable from a config file, and a config is arbitrary
+    (§spec:problem-statement). This compiler refuses by name instead, which is
+    what it does with every other parameterisation it has no path for.
+    """
     params = [float(value) for value in transform.getParams()]
+    if not all(math.isfinite(value) for value in params):
+        raise UnsupportedTransformError(
+            "ACES_OUTPUT_TRANSFORM_20 with a non-finite parameter is not "
+            f"emitted by this compiler; it was given {params}"
+        )
     peak_luminance = F32(params[0])
     limiting: Primaries = tuple(
         (params[1 + 2 * i], params[2 + 2 * i]) for i in range(4)
@@ -641,6 +670,16 @@ def output_transform(transform: Any) -> OutputTransform:
 
     limit_lightness = luminance_to_lightness(peak_luminance)
     reach, cusps = _ocio_tables(transform)
+    # The emitted graph bounds its own lookups against ``TABLE_SIZE``, so a
+    # table of another length is not a smaller table — it is an out-of-range
+    # ``Gather`` in whatever executor the consumer runs, undefined there and
+    # invisible here. OCIO 2.4 publishes 362 entries where 2.5 publishes 363.
+    if reach.shape != (TABLE_SIZE,) or cusps.shape != (TABLE_SIZE, 3):
+        raise UnsupportedTransformError(
+            f"OCIO published {reach.shape[0]}-entry ACES_OUTPUT_TRANSFORM_20 "
+            f"tables; this compiler emits a graph indexing {TABLE_SIZE}, and "
+            "will not emit one whose lookups would run past the table"
+        )
     hues = _hue_table(
         _merge_hues(
             _reach_corners(appearance(AP1), limit_lightness, tone.forward_limit),

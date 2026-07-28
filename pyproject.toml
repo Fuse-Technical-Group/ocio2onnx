@@ -10,9 +10,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
-    # Op coverage was measured against OCIO 2.5 (§spec:op-coverage). The
-    # range pins the major line; §road:distribution narrows it.
-    "opencolorio>=2.4,<3",
+    # Op coverage was measured against OCIO 2.5 (§spec:op-coverage), and the
+    # ACES 2.0 output transform reads that line's hue table layout: 2.4
+    # publishes 362 entries where 2.5 publishes 363, and a graph emitted
+    # against one and indexed for the other reads past the table in whatever
+    # executor the consumer runs. The floor is 2.5 for that reason rather than
+    # for a feature. §road:distribution narrows the range further.
+    "opencolorio>=2.5,<3",
     "onnx>=1.17",
     "numpy>=1.24",
 ]

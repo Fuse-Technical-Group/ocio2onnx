@@ -23,6 +23,7 @@ from typing import Any
 import numpy as np
 
 from ocio2onnx import aces2
+from ocio2onnx.addressing import OCIO_ERRORS
 from ocio2onnx.builder import CHANNEL_AXIS, CHANNELS, GraphBuilder
 
 #: A ``Range`` bound OCIO leaves unset arrives as NaN, and ``Clip`` needs a
@@ -1383,6 +1384,34 @@ def _hue_interval(
     return builder.op("Max", [one, upper])
 
 
+#: What a degenerate set of chromaticities raises on its way through the
+#: expansion, before any of it reaches a graph. A white point at ``y = 0``
+#: divides by zero, three collinear primaries give a singular matrix that
+#: neither numpy nor OCIO can invert, and a NaN that survives to the hue table
+#: cannot be floored to an index. None of them is a compiler fault, and all of
+#: them arrive from a config file, so each becomes the refusal a caller already
+#: handles rather than a traceback (§spec:op-coverage).
+#: ``ValueError`` covers both this module's own `aces2.UnsupportedTransformError`
+#: and a NaN that reaches an integer conversion.
+DEGENERATE_PARAMETERS = (
+    ValueError,
+    ZeroDivisionError,
+    np.linalg.LinAlgError,
+    *OCIO_ERRORS,
+)
+
+
+def _resolve_output_transform(transform: Any) -> aces2.OutputTransform:
+    """Expand one op's parameters, or refuse naming what they did."""
+    try:
+        return aces2.output_transform(transform)
+    except DEGENERATE_PARAMETERS as exc:
+        raise UnsupportedOpError(
+            "FixedFunction[ACES_OUTPUT_TRANSFORM_20] with these parameters is "
+            f"not emitted by this compiler: {exc}"
+        ) from exc
+
+
 def aces_output_transform_breakpoints(transform: Any) -> list[float]:
     """Black and the peak, stated on the diagonal.
 
@@ -1431,7 +1460,7 @@ def emit_aces_output_transform(builder: GraphBuilder, transform: Any, x: str) ->
             "an inverse FixedFunction[ACES_OUTPUT_TRANSFORM_20] is not emitted "
             "by this compiler; it emits the forward display rendering"
         )
-    params = aces2.output_transform(transform)
+    params = _resolve_output_transform(transform)
 
     zero = builder.scalar("zero", 0.0)
     one = builder.scalar("one", 1.0)

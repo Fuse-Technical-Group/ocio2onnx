@@ -118,6 +118,50 @@ def test_an_inverse_output_transform_is_refused_by_name(config, compile_bare):
         compile_bare(config.getProcessor(aces(inverse=True)))
 
 
+#: Chromaticities OCIO accepts and this compiler cannot expand. OCIO validates
+#: the peak luminance and stops, so each of these round-trips through a config
+#: file and reaches the emitter: a NaN that reads out of bounds inside OCIO's
+#: own hull construction, a white point that divides by zero, and three
+#: collinear primaries whose matrix has no inverse.
+DEGENERATE = {
+    "a non-finite chromaticity": (float("nan"), 0.33, 0.3, 0.6, 0.15, 0.06),
+    "a white point on the x axis": (0.64, 0.33, 0.3, 0.6, 0.15, 0.06),
+    "collinear primaries": (0.3, 0.3, 0.3, 0.3, 0.3, 0.3),
+}
+
+#: The white point each of those is paired with. Only the second is degenerate
+#: on its own; the others fail on their primaries.
+DEGENERATE_WHITE = {"a white point on the x axis": (0.3127, 0.0)}
+
+
+@pytest.mark.parametrize("case", DEGENERATE, ids=list(DEGENERATE))
+def test_degenerate_chromaticities_are_refused_rather_than_crashing(
+    case, config, compile_bare
+):
+    """OCIO validates this op's peak luminance and nothing else, so a config
+    can hand over chromaticities that divide by zero, have no inverse, or read
+    out of bounds inside OCIO itself. A refusal is an answer; a traceback — or
+    a segmentation fault — is not (§spec:op-coverage)."""
+    white = DEGENERATE_WHITE.get(case, (0.3127, 0.329))
+    params = (100.0, *DEGENERATE[case], *white)
+    with pytest.raises(emitters.UnsupportedOpError, match="ACES_OUTPUT_TRANSFORM_20"):
+        compile_bare(config.getProcessor(aces(params)))
+
+
+def test_a_table_of_another_length_is_refused_rather_than_indexed_past(monkeypatch):
+    """The emitted graph bounds its lookups against ``TABLE_SIZE``, so a table
+    of another length is not a smaller table — it is an out-of-range ``Gather``
+    in the consumer's executor, which is undefined there and invisible here.
+    OCIO 2.4 publishes 362 entries where 2.5 publishes 363."""
+    short = (
+        np.zeros(aces2.TABLE_SIZE - 1, dtype=np.float32),
+        np.zeros((aces2.TABLE_SIZE - 1, 3), dtype=np.float32),
+    )
+    monkeypatch.setattr(aces2, "_ocio_tables", lambda transform: short)
+    with pytest.raises(aces2.UnsupportedTransformError, match="362"):
+        aces2.output_transform(aces())
+
+
 def test_the_graph_is_finite_across_the_lattice(config, compile_bare):
     """A display rendering compresses to a display range, so nothing in the
     lattice has anywhere to overflow to. Every ``Pow`` in the chain would

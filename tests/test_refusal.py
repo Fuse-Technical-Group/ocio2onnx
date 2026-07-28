@@ -21,14 +21,19 @@ from ocio2onnx.emitters import REGISTRY, UnsupportedOpError, op_label, supported
 #: The pair the compiler emits.
 PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 
+#: A hue adjustment the ``Lut1D`` emitter has no path for. ``Lut1D`` is
+#: registered, so an op list sees nothing wrong — a refusal only the emitter
+#: can raise.
+LUT_HUE_ADJUST = OCIO.HUE_DW3
+
 #: The display view the compiler refuses, and the style that blocks it.
 ACES_VIEW = ("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
 ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 
-#: A view carrying three unimplemented ops, the first of them four ops in.
+#: A view carrying two unimplemented ops, the first of them four ops in.
 #: Emitting until something unsupported turns up would name one and stop.
 CROWDED_VIEW = ("Rec.2100-HLG - Display", "ACES 2.0 - HDR 1000 nits (P3 D65)")
-CROWDED_OPS = [ACES_STYLE, "FixedFunction[REC2100_SURROUND]", "Lut1D"]
+CROWDED_OPS = [ACES_STYLE, "FixedFunction[REC2100_SURROUND]"]
 
 
 @pytest.fixture
@@ -55,6 +60,7 @@ def test_the_supported_set_is_read_off_the_registry():
         "ExponentWithLinear",
         "Log",
         "LogCamera",
+        "Lut1D",
     }
 
 
@@ -84,9 +90,21 @@ def test_the_refusal_names_the_fixed_function_style(resolve):
     assert unsupported_ops(resolve(*ACES_VIEW).processor) == [ACES_STYLE]
 
 
-def test_an_op_with_no_distinguishing_attribute_is_named_by_its_type(resolve):
-    display, view = "Rec.2100-PQ - Display", "Un-tone-mapped"
-    assert "Lut1D" in unsupported_ops(resolve(display, view).processor)
+def test_a_refusal_an_op_list_cannot_see_is_raised_at_emission(config):
+    """``Lut1D`` is registered, so the op list passes this transform; the
+    emitter refuses a parameter of it on reading the op. A caller meets one
+    refusal, whichever layer raised it."""
+    lut = OCIO.Lut1DTransform(length=2)
+    lut.setHueAdjust(LUT_HUE_ADJUST)
+    resolved = Resolved(
+        processor=config.getProcessor(lut),
+        config_name=config.getName(),
+        config_uri=DEFAULT_CONFIG,
+        endpoints="bare",
+    )
+    assert unsupported_ops(resolved.processor) == []
+    with pytest.raises(UnsupportedOpError, match="hue adjust"):
+        compile_processor(resolved)
 
 
 def test_op_names_strip_the_transform_suffix(config):

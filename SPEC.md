@@ -189,10 +189,34 @@ no such limit, so neither the packing nor its stride carries over.
 
 An inverse `Lut1D` inverts at compile time rather than searching at run
 time. OCIO hands over the forward table in both directions, and a
-monotonic table inverts once, offline, to a uniform-domain table the graph
-reads as an ordinary gather and lerp. Whether that resampling holds
-tolerance is the oracle's finding (§spec:verification), not an assumption
-this section is entitled to make.
+monotonic table inverts once, offline, onto the **half domain**. An
+inverse therefore reaches the graph as an ordinary forward half-domain
+table, read by the gather and lerp that already exists, and direction
+costs no second code path and no run-time search. A table that does not
+rise has no inverse to read off and is refused by name.
+
+**The inversion grid is the half domain because the oracle rejected a
+uniform one.** This section proposed a uniform-domain table and left the
+question open; the oracle (§spec:verification) overruled it. Across the
+lattices of the eight transforms carrying an inverse — 10134 samples
+against the CPU processor — the half domain misses nothing, while a
+uniform grid over the forward table's output range misses 2267 samples by
+as much as 2.06. The reason is dynamic range. Those output ranges are
+enormous — `ACEScc` spans [-5.7e-07, 96617.7], `Apple Log` [-0.056,
+3.4e+38] — so a uniform grid puts nearly every sample above middle grey
+and leaves the toe, which is most of a picture, to one interval. Sample
+count does not rescue it: 65536 uniform samples still miss 2138. A half's
+spacing is geometric, so it holds the same *relative* resolution in every
+decade, which is the shape a log-encoded curve has.
+
+Where the forward table is flat its inverse is ambiguous across a whole
+interval, and the ends of that interval sit half a domain apart. Each flat
+run collapses to the end the curve leaves it at — the edge of the interval
+the table is invertible over — and outside that interval the inverse
+clamps. Read off OCIO rather than chosen: OCIO answers -65504 with 0 for
+`ref -> Apple Log`, whose decode is flat across [-65504, 0], and 65504
+with 3.7597656 for `ref -> ADX10`, whose is flat across [3.7597656,
+65504]. Taking the same end of every run puts one of those two far wrong.
 
 **Where OCIO ships a curve as a table, the compiler emits the table.**
 `Rec.2100-PQ - Display` resolves to a `BuiltinTransform` that OCIO
@@ -227,6 +251,15 @@ against its accurate one. Which optimization flags the oracle runs under
 is a correctness decision, not a tuning knob — the reference has to be
 OCIO's accurate arithmetic, or a compiler error and an oracle error are
 indistinguishable.
+
+**`OPTIMIZATION_LUT_INV_FAST` stays on**, which is the same decision read
+the other way. Cleared, OCIO's inverse `Lut1D` renderer parts company with
+its own fast path beyond tolerance at 5 samples across the pinned config,
+every one at an input of 65504 — and the fast path is the one that agrees
+with the encoding, which puts 65504 at ACEScc 1.468 where the cleared path
+answers 1.4987. A flag is cleared where it makes the reference less
+accurate. Reaching a coverage number by loosening the oracle is a failure,
+not a pass, and so is tightening it past the reference.
 
 *Why an oracle rather than reference constants*: the failure mode here is
 not a wrong constant, it is a subtly wrong *interpretation* — a direction

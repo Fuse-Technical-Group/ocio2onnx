@@ -158,11 +158,16 @@ def cpu_reference(processor: OCIO.Processor, samples: np.ndarray) -> np.ndarray:
 
     ``applyRGB`` wants a contiguous ``(N, 3)`` float32 array and mutates it in
     place, so the channels-first lattice is transposed in and back out.
+
+    The copy is unconditional. Transposing a lattice of more than one column
+    yields a non-contiguous array, so ``ascontiguousarray`` alone happens to
+    copy — but at one column it returns the caller's own buffer, and OCIO then
+    overwrites the samples a caller is about to hand to the graph.
     """
     shape = np.shape(samples)
     planes = np.reshape(samples, (shape[0], CHANNELS, -1))
-    pixels = np.ascontiguousarray(
-        planes.transpose(0, 2, 1).reshape(-1, CHANNELS), dtype=np.float32
+    pixels = np.array(
+        planes.transpose(0, 2, 1).reshape(-1, CHANNELS), dtype=np.float32, order="C"
     )
     processor.getOptimizedCPUProcessor(OPTIMIZATION_FLAGS).applyRGB(pixels)
     return np.reshape(

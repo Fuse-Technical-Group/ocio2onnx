@@ -11,9 +11,13 @@ display view, and reports three things:
   a list kept here
 
 That last point is the whole of this module's discipline. A private copy of
-the supported set drifts the moment an emitter is added, and it had: it named
-``Lut1D``, which no emitter implements, so the census reported 28 refusals
-where the compiler makes 48.
+the supported set drifts the moment an emitter is added or removed, and it
+had: it named ``Lut1D`` while no emitter implemented one, so the census
+reported 28 refusals where the compiler made 48.
+
+It reports the op set, so a transform an emitter refuses for a parameter it
+carries — a hue-adjusted ``Lut1D``, say — counts here as supported. The
+refusal a consumer meets is ``ocio2onnx verify``'s, which compiles.
 
 Run it against a new OCIO release to see what changed: a new op type shows up
 as a refusal rather than as silence. This is the measurement the specification

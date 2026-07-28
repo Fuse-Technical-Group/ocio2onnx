@@ -59,16 +59,20 @@ class GraphBuilder:
         self._counts[hint] += 1
         return f"{hint}_{index}"
 
-    def constant(self, hint: str, value: Any) -> str:
-        """An initializer holding ``value`` at its own shape, as float32."""
-        array = np.asarray(value, dtype=np.float32)
+    def constant(self, hint: str, value: Any, dtype: Any = np.float32) -> str:
+        """An initializer holding ``value`` at its own shape.
+
+        float32 unless a caller asks otherwise, which only an index does: the
+        graph carries float32 and ONNX indexing operators take integers.
+        """
+        array = np.asarray(value, dtype=dtype)
         name = self.name(hint)
         self._initializers.append(numpy_helper.from_array(array, name))
         return name
 
-    def per_channel(self, hint: str, values: Any) -> str:
+    def per_channel(self, hint: str, values: Any, dtype: Any = np.float32) -> str:
         """A three-element constant shaped to broadcast across channels."""
-        return self.constant(hint, np.reshape(values, CHANNEL_SHAPE))
+        return self.constant(hint, np.reshape(values, CHANNEL_SHAPE), dtype)
 
     def scalar(self, hint: str, value: float) -> str:
         """A single-element constant that broadcasts against anything."""
@@ -96,6 +100,14 @@ class GraphBuilder:
 
     def pow(self, a: str, b: str) -> str:
         return self.op("Pow", [a, b])
+
+    def to_int64(self, x: str) -> str:
+        """Cast to int64, which is what a ``Gather`` index must be.
+
+        Here rather than in an emitter so the ONNX type enumeration stays
+        inside the module that speaks ONNX.
+        """
+        return self.op("Cast", [x], to=TensorProto.INT64)
 
     def where(self, condition: str, a: str, b: str) -> str:
         """Select elementwise. ONNX has no per-element branching, so an op with

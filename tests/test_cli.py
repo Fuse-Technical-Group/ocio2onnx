@@ -39,10 +39,16 @@ ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 #: A closed-form display view.
 OPEN_VIEW = ("sRGB - Display", "Un-tone-mapped")
 
-#: The partition §spec:op-coverage measured, which ``verify`` must reproduce.
-VERIFIED = 111
-REFUSED = 48
+#: The partition ``verify`` reproduces: the 111 closed-form transforms
+#: §spec:op-coverage measured, plus the 20 carrying a ``Lut1D`` over either
+#: domain in either direction. What is left refuses on ``FixedFunction``.
+VERIFIED = 131
+REFUSED = 28
 TOTAL = 159
+
+#: ``verify`` and the census reach the same 28 by different routes — one
+#: compiles, the other reads the op set — so their agreeing is a measured
+#: fact about this config rather than an identity.
 
 
 @pytest.fixture
@@ -235,9 +241,9 @@ def test_verify_partitions_the_whole_config_with_nothing_skipped(capsys):
     }
     assert VERIFIED + REFUSED == TOTAL
 
-    assert "40  Lut1D" in printed
     assert f"24  {ACES_STYLE}" in printed
     assert "5  FixedFunction[REC2100_SURROUND]" in printed
+    assert "Lut1D" not in printed
     assert "worst deviation" in printed
 
 

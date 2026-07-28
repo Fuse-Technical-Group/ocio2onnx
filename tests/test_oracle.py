@@ -222,6 +222,16 @@ def test_cpu_reference_does_not_mutate_its_input(config):
     assert np.array_equal(samples, before)
 
 
+def test_cpu_reference_does_not_mutate_a_single_column_of_samples(config, row):
+    """One column is the case the transpose does not already copy, and every
+    caller runs the reference before the graph over the same array: an
+    in-place ``applyRGB`` would feed the graph the reference's own output."""
+    processor = config.getProcessor("ACEScg", "ACES2065-1")
+    samples = row(0.5)
+    cpu_reference(processor, samples)
+    assert samples == pytest.approx(row(0.5))
+
+
 def test_cpu_reference_clears_ocios_fast_math_path(config):
     """The oracle must be the accurate reference, not OCIO's approximate
     ``pow``/``log``/``exp``, whose error is two orders of magnitude above the
@@ -239,5 +249,43 @@ def test_cpu_reference_clears_ocios_fast_math_path(config):
 
 
 def test_fast_log_exp_pow_is_the_only_optimization_cleared():
-    cleared = OCIO.OPTIMIZATION_DEFAULT.value ^ OPTIMIZATION_FLAGS.value
-    assert cleared == OCIO.OPTIMIZATION_FAST_LOG_EXP_POW.value
+    assert (
+        OCIO.OPTIMIZATION_DEFAULT.value ^ OPTIMIZATION_FLAGS.value
+        == OCIO.OPTIMIZATION_FAST_LOG_EXP_POW.value
+    )
+    assert OPTIMIZATION_FLAGS.value & OCIO.OPTIMIZATION_LUT_INV_FAST.value
+
+
+#: A pixel whose channels disagree, carrying 65504 in the first. OCIO's exact
+#: inverse ``Lut1D`` renderer answers it correctly when all three channels hold
+#: the same value and incorrectly when they do not, and the lattice rolls each
+#: channel so they never do (``CHANNEL_ROLLS``).
+INVERSE_LUT_PIXEL = [65504.0, 0.18, 1.0]
+
+
+def test_clearing_the_fast_inverse_lut_would_move_the_oracle_off_the_answer(config):
+    """``OPTIMIZATION_LUT_INV_FAST`` stays on, and not because it is inert.
+
+    Cleared, OCIO's inverse ``Lut1D`` renderer parts company with its own fast
+    path at the top of the domain — 5 samples across the pinned config, every
+    one at an input of 65504. The fast path is the one that is right there:
+    ACEScc encodes a linear value as ``(log2(x) + 9.72) / 17.52``, which puts
+    65504 at 1.468, and the exact path answers 1.4987.
+
+    Which flags the oracle runs under is a correctness decision, and this is
+    the direction it points here: clearing this one would fail a graph for
+    agreeing with the encoding (§spec:verification).
+    """
+    processor = config.getProcessor("ACES2065-1", "ACEScc")
+    want = (np.log2(65504.0) + 9.72) / 17.52
+
+    def encoded(flags):
+        pixel = np.array([INVERSE_LUT_PIXEL], dtype=np.float32, order="C")
+        processor.getOptimizedCPUProcessor(flags).applyRGB(pixel)
+        return float(pixel[0, 0])
+
+    assert encoded(OPTIMIZATION_FLAGS) == pytest.approx(want, rel=1e-4)
+    cleared = OCIO.OptimizationFlags(
+        OPTIMIZATION_FLAGS.value & ~OCIO.OPTIMIZATION_LUT_INV_FAST.value
+    )
+    assert abs(encoded(cleared) - want) > TOLERANCE.bound(want)

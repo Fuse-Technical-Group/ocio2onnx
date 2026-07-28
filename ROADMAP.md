@@ -4,43 +4,6 @@ Derived from SPEC.md. Every item traces to a spec gap. Sections are
 in build-dependency order. Completed work is removed; presence here
 means the work is not done.
 
-## Sampled lookups §road:sampled-luts
-
-The 20 transforms carrying a `Lut1D` (§spec:op-coverage). Split from the
-closed-form compiler that ships because that set needs no table machinery
-at all, and because this is the most involved emitter in the project
-(§spec:op-emission). Each workstream adds coverage the harness confirms
-independently.
-
-### Uniform 1D LUTs §road:uniform-lut
-
-Emit a forward `Lut1D` over a uniform domain as a gather and lerp,
-unblocking ACEScc, CanonLog2, and CanonLog3 (§spec:op-emission). The
-smallest of the three, and the one that settles how a table reaches the
-graph as an initializer. The oracle already verifies whatever it emits
-(§spec:verification).
-
-### Half-domain 1D LUTs §road:half-domain-lut
-
-Emit a `Lut1D` over a half domain by reconstructing the float16 index
-arithmetically, after OCIO's own GLSL, unblocking the PQ and ST2084
-displays, ADX10, ADX16, and Apple Log (§spec:op-emission). 34 of the 40
-`Lut1D` ops in the pinned config take this path. Depends on
-§road:uniform-lut.
-
-### Inverse 1D LUTs §road:inverse-lut
-
-Invert a monotonic `Lut1D` at compile time onto a uniform domain and emit
-the result as an ordinary table (§spec:op-emission), unblocking the 8
-transforms that carry one. Whether the resampling holds tolerance is the
-harness's finding rather than an assumption. Depends on
-§road:half-domain-lut.
-
-**Verify:** Compile `ACES2065-1` → `Rec.2100-PQ - Display` and confirm the
-graph agrees with the CPU processor across the lattice, including inputs
-falling between two adjacent half slots. Confirm the census partition now
-places all 131 non-`FixedFunction` transforms in the verified bucket.
-
 ## Display rendering ops §road:display-rendering
 
 The two `FixedFunction` styles the compiler refuses by name

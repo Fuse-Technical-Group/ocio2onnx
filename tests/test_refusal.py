@@ -37,6 +37,20 @@ LUT_HUE_ADJUST = OCIO.HUE_DW3
 UNEMITTED_STYLE = OCIO.FIXED_FUNCTION_ACES_RED_MOD_03
 UNEMITTED_LABEL = "FixedFunction[ACES_RED_MOD_03]"
 
+#: The four curve-shaped grading families, and how a refusal spells each.
+#: Their parameters are control points rather than values, so they are
+#: deferred until a consumer needs curve-based grading rather than CDL; until
+#: then they refuse by the mechanism any unimplemented op refuses by
+#: (§spec:dynamic-properties). All four are named because the deferral is a
+#: claim about all four — and `GradingHueCurve` is the one OCIO 2.5 added,
+#: which is the case a registry-derived check exists for.
+GRADING_FAMILIES = {
+    "GradingPrimary": OCIO.GradingPrimaryTransform,
+    "GradingRGBCurve": OCIO.GradingRGBCurveTransform,
+    "GradingTone": OCIO.GradingToneTransform,
+    "GradingHueCurve": OCIO.GradingHueCurveTransform,
+}
+
 #: Two unimplemented ops in one transform, the second behind the first.
 #: Emitting until something unsupported turns up would name one and stop.
 CROWDED_OPS = ["GradingPrimary", "GradingTone"]
@@ -106,12 +120,17 @@ def test_an_op_absent_from_the_registry_is_refused(config, monkeypatch):
     assert "Matrix" in unsupported_ops(resolved.processor)
 
 
-def test_an_op_type_this_compiler_has_never_seen_is_refused(config):
-    """An OCIO op no workstream has reached yet. ``GRADING_*`` is deferred
-    behind a named trigger and refuses by this mechanism until then
-    (§road:grading-curves)."""
-    processor = config.getProcessor(OCIO.GradingPrimaryTransform())
-    assert unsupported_ops(processor) == ["GradingPrimary"]
+@pytest.mark.parametrize("label", GRADING_FAMILIES)
+def test_a_deferred_grading_family_is_refused_by_name(config, label):
+    """An OCIO op no workstream has reached yet. The four ``GRADING_*``
+    families are deferred until a consumer needs curve-based grading rather
+    than CDL, and each refuses by this mechanism until then
+    (§spec:dynamic-properties). Deferring is not the same as being unreachable:
+    a caller naming one is told which op stopped it, by name, for every family
+    the deferral covers rather than for the one a test happened to pick."""
+    processor = config.getProcessor(GRADING_FAMILIES[label]())
+    assert unsupported_ops(processor) == [label]
+    assert label not in supported_ops()
 
 
 def test_the_refusal_names_the_fixed_function_style(unemitted_style):

@@ -63,7 +63,6 @@ def test_the_partition_accounts_for_every_transform(partition):
     assert len(refused) == REFUSED_TRANSFORMS
     assert len(closed_form) == CLOSED_FORM_TRANSFORMS
     assert len(sampled) + len(refused) + len(closed_form) == TOTAL_TRANSFORMS
-    assert len(sampled) + len(closed_form) == TOTAL_TRANSFORMS - REFUSED_TRANSFORMS
 
 
 def test_the_sweep_reaches_both_directions(partition, config):

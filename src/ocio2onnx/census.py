@@ -16,7 +16,7 @@ had: it named ``Lut1D`` while no emitter implemented one, so the census
 reported 28 refusals where the compiler made 48.
 
 It reports the op set, so a transform an emitter refuses for a parameter it
-carries — a half-domain ``Lut1D``, say — counts here as supported. The
+carries — a hue-adjusted ``Lut1D``, say — counts here as supported. The
 refusal a consumer meets is ``ocio2onnx verify``'s, which compiles.
 
 Run it against a new OCIO release to see what changed: a new op type shows up

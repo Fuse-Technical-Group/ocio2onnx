@@ -46,10 +46,9 @@ VERIFIED = 131
 REFUSED = 28
 TOTAL = 159
 
-#: ``verify`` and the census now refuse the same transforms. They did not
-#: while the ``Lut1D`` emitter refused a direction: direction is a parameter
-#: of a registered op, so the census counted 28 where ``verify`` counted 36.
-CENSUS_REFUSED = REFUSED
+#: ``verify`` and the census reach the same 28 by different routes — one
+#: compiles, the other reads the op set — so their agreeing is a measured
+#: fact about this config rather than an identity.
 
 
 @pytest.fixture
@@ -252,7 +251,7 @@ def test_census_is_reachable_from_the_cli(capsys):
     assert main(["census"]) == OK
     printed = capsys.readouterr().out
     assert f"transforms measured: {TOTAL}" in printed
-    assert f"refused: {CENSUS_REFUSED}/{TOTAL}" in printed
+    assert f"refused: {REFUSED}/{TOTAL}" in printed
 
 
 def test_an_unknown_subcommand_is_a_usage_error(capsys):

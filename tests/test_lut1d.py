@@ -138,6 +138,15 @@ def per_channel(length=SYNTHETIC_LENGTH):
     )
 
 
+def is_inverse(transform):
+    """Whether OCIO hands this op over to be run backwards.
+
+    Spelled out here rather than imported: a test asserting a direction split
+    with the implementation's own direction predicate would assert nothing.
+    """
+    return str(transform.getDirection()).endswith("INVERSE")
+
+
 def emit(transform):
     """Run the emitter alone, for the refusals a processor would not reach."""
     return emitters.emit_lut1d(GraphBuilder(), transform, INPUT)
@@ -234,10 +243,7 @@ def test_the_pinned_configs_domains_are_what_the_specification_counted(config_op
 
 
 def test_the_pinned_configs_directions_are_what_the_specification_counted(config_ops):
-    inverse = [
-        str(transform.getDirection()).endswith("INVERSE")
-        for transform in config_ops(LUT1D)
-    ]
+    inverse = [is_inverse(transform) for transform in config_ops(LUT1D)]
     assert inverse.count(True) == INVERSE_OPS
     assert inverse.count(False) == FORWARD_OPS
 
@@ -246,7 +252,7 @@ def test_the_half_domain_ops_split_by_direction_as_the_coverage_claims(config_op
     """The half-domain workstream reaches the forward ops alone, so the split
     is what it moves rather than the 34."""
     inverse = [
-        str(transform.getDirection()).endswith("INVERSE")
+        is_inverse(transform)
         for transform in config_ops(LUT1D)
         if transform.getInputHalfDomain()
     ]
@@ -480,8 +486,7 @@ def test_a_forward_half_domain_lut_is_emitted_rather_than_refused(config_ops):
     half = [
         transform
         for transform in config_ops(LUT1D)
-        if transform.getInputHalfDomain()
-        and not str(transform.getDirection()).endswith("INVERSE")
+        if transform.getInputHalfDomain() and not is_inverse(transform)
     ]
     assert len(half) == HALF_DOMAIN_FORWARD_OPS
     assert emit(half[0])
@@ -492,11 +497,7 @@ def test_an_inverse_lut_is_emitted_rather_than_refused(config_ops):
     """The refusal this workstream lifted. Every inverse op in the pinned
     config emits, including the one inside a transform that refuses anyway, so
     the monotonicity guard is measured against all nine rather than eight."""
-    inverse = [
-        transform
-        for transform in config_ops(LUT1D)
-        if str(transform.getDirection()).endswith("INVERSE")
-    ]
+    inverse = [transform for transform in config_ops(LUT1D) if is_inverse(transform)]
     assert len(inverse) == INVERSE_OPS
     for transform in inverse:
         assert emit(transform)

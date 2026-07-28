@@ -57,7 +57,7 @@ HALF_NORMAL_MIN = 2.0**-14
 HALF_MAX = 65504.0
 
 #: Slots per binade: ``2**10``, for a half's ten mantissa bits.
-HALF_BINADE = 1024
+HALF_BINADE = 1024.0
 
 #: What ``floor(log2(x))`` is shifted by to reach a half's exponent field —
 #: 15 for the bias, which already counts the denormal binade below it.
@@ -657,14 +657,25 @@ def lut1d_table(transform: Any) -> np.ndarray:
     than left at the infinity OCIO reports, because that is where OCIO's CPU
     processor holds it.
     """
-    values = np.array(
-        [transform.getValue(i) for i in range(transform.getLength())],
-        dtype=np.float64,
-    )
-    return np.clip(values, -LUT1D_ENTRY_MAX, LUT1D_ENTRY_MAX).astype(np.float32)
+    values = np.asarray(transform.getData()).reshape(transform.getLength(), CHANNELS)
+    # ``clip`` allocates, so OCIO's own buffer is read rather than aliased.
+    return np.clip(values, -LUT1D_ENTRY_MAX, LUT1D_ENTRY_MAX)
 
 
-def lut1d_domain(transform: Any) -> np.ndarray:
+def _is_half_indexed(transform: Any) -> bool:
+    """Whether the graph reads this op through the half index.
+
+    A forward half-domain table does. So does an inverse one whatever domain
+    it was written over, because ``lut1d_inverse_table`` puts it on the half
+    domain. ``lut1d_breakpoints`` and ``emit_lut1d`` have to agree on this:
+    were they to disagree, the lattice would straddle branches the graph does
+    not have and miss the ones it does, and the oracle cannot report a branch
+    it was never told to sample.
+    """
+    return bool(transform.getInputHalfDomain()) or _is_inverse(transform)
+
+
+def _lut1d_domain(transform: Any) -> np.ndarray:
     """The input value each of a table's entries stands for.
 
     A uniform table's is a position in the unit interval, which is how
@@ -737,7 +748,7 @@ def lut1d_inverse_table(transform: Any) -> np.ndarray:
     samples above middle grey and leaves the toe to a single interval
     (§spec:op-emission).
     """
-    domain = lut1d_domain(transform)
+    domain = _lut1d_domain(transform)
     table = lut1d_table(transform)
     return np.stack(
         [
@@ -792,7 +803,7 @@ def lut1d_breakpoints(transform: Any) -> list[float]:
     breakpoint is declared where a misreading would put a sample on the wrong
     branch, and a slot boundary has no branch.
     """
-    if transform.getInputHalfDomain() or _is_inverse(transform):
+    if _is_half_indexed(transform):
         return [0.0, HALF_NORMAL_MIN, -HALF_NORMAL_MIN]
     return list(LUT1D_DOMAIN)
 
@@ -865,7 +876,7 @@ def _half_domain_index(builder: GraphBuilder, x: str) -> tuple[str, str]:
     )
     binade_low = builder.pow(builder.scalar("two", 2.0), exponent)
     mantissa = builder.div(builder.sub(clipped, binade_low), binade_low)
-    slots = builder.scalar("half_binade", float(HALF_BINADE))
+    slots = builder.scalar("half_binade", HALF_BINADE)
 
     position = builder.where(
         normal,
@@ -933,7 +944,7 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
     table = lut1d_inverse_table(transform) if inverse else lut1d_table(transform)
     length = table.shape[0]
 
-    if inverse or transform.getInputHalfDomain():
+    if _is_half_indexed(transform):
         position, offset = _half_domain_index(builder, x)
     else:
         position, offset = _uniform_index(builder, x, length)

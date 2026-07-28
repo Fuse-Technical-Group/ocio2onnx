@@ -31,8 +31,8 @@ OP_CENSUS = {
 TOTAL_TRANSFORMS = 159
 
 #: The census refuses by op type, so a transform whose ``Lut1D`` an emitter
-#: refuses for its domain or its direction is not counted here. That refusal
-#: is ``ocio2onnx verify``'s, which compiles (§spec:op-coverage).
+#: refuses for a parameter — a hue adjust, say — is not counted here. That
+#: refusal is ``ocio2onnx verify``'s, which compiles (§spec:op-coverage).
 REFUSED_TRANSFORMS = 28
 NEEDS_LUT = 48
 

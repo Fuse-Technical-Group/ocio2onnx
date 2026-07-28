@@ -34,7 +34,7 @@ from ocio2onnx.builder import INPUT, GraphBuilder
 from ocio2onnx.emitters import UnsupportedOpError
 from ocio2onnx.oracle import TOLERANCE, compare, cpu_reference, lattice, run_graph
 
-LUT1D = "Lut1DTransform"
+LUT1D = "Lut1D"
 REFERENCE = "ACES2065-1"
 
 #: The three color spaces whose forward direction carries a uniform table.

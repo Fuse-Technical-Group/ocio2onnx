@@ -34,7 +34,7 @@ PAIRS = (
 )
 
 
-LOG_CAMERA = "LogCameraTransform"
+LOG_CAMERA = "LogCamera"
 
 
 def declares_linear_slope(transform):

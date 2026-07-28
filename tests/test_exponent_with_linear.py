@@ -34,7 +34,7 @@ STYLES = (OCIO.NEGATIVE_MIRROR, OCIO.NEGATIVE_LINEAR)
 SRGB = (2.4, 0.055)
 REC709 = (2.2222222222222223, 0.099)
 
-MONCURVE = "ExponentWithLinearTransform"
+MONCURVE = "ExponentWithLinear"
 
 
 def moncurve_transform(gamma, offset, *, style=OCIO.NEGATIVE_MIRROR, inverse=False):

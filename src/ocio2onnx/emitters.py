@@ -2,15 +2,15 @@
 
 Every coefficient is read off OCIO's transform introspection; this module
 holds no opinion the config does not already state (§spec:non-goals). The
-registry keys on the OCIO transform class name, so adding an op is adding an
-entry rather than editing the compiler.
+registry keys on ``op_label``, so adding an op is adding an entry rather than
+editing the compiler.
 
 Each entry also declares its **breakpoints**: the input values at which the
 op switches branches. The oracle's lattice asks every op in a processor for
 them and samples either side, because a breakpoint read onto the wrong side
 of a comparison is the misreading verification exists to catch
-(§spec:verification). ``Matrix`` has none; the branching ops added by
-the branching ops widen the lattice by declaring theirs.
+(§spec:verification). ``Matrix`` has none; a branching op widens the lattice
+by declaring its own.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from ocio2onnx.builder import CHANNELS, GraphBuilder
+from ocio2onnx.builder import CHANNEL_AXIS, CHANNELS, GraphBuilder
 
 #: A ``Range`` bound OCIO leaves unset arrives as NaN, and ``Clip`` needs a
 #: number. This stands in for "no bound": float16's finite limit is 65504, so
@@ -106,6 +106,16 @@ LUT1D_INTERPOLATIONS = ("LINEAR", "DEFAULT")
 #: The only hue adjustment this compiler emits, which is none.
 HUE_NONE = "NONE"
 
+#: Rec.2020's luminance weights, which ``REC2100_SURROUND`` reads a pixel's Y
+#: through. They sum to one, so the op raises a neutral pixel to its gamma and
+#: does nothing else to it.
+REC2100_LUMA = (0.2627, 0.6780, 0.0593)
+
+#: The luminance OCIO's own renderer floors the forward surround op at, so a
+#: pixel approaching black takes a bounded scale. Read off OCIO rather than
+#: chosen, as ``LOG_FLOOR`` is.
+REC2100_MIN_LUM = 1e-4
+
 
 class UnsupportedOpError(NotImplementedError):
     """An op, or a parameter of one, the compiler does not emit.
@@ -136,17 +146,53 @@ class Emitter:
     breakpoints: Breakpoints = no_breakpoints
 
 
-#: OCIO transform class name -> emitter.
+def _enum_member(value: Any, prefix: str) -> str:
+    """An OCIO enum member's bare name. ``str`` gives ``Class.MEMBER``, and the
+    member repeats its class in the prefix callers drop here."""
+    return str(value).rsplit(".", 1)[-1].removeprefix(prefix)
+
+
+def op_name(transform: Any) -> str:
+    """One op's bare type name, without whatever distinguishes it."""
+    return type(transform).__name__.removesuffix("Transform")
+
+
+#: Op types whose behaviour is set by an attribute rather than by the type
+#: alone, and the reading that names it. ``FixedFunction`` is two unrelated
+#: transforms sharing a class — ``REC2100_SURROUND`` and
+#: ``ACES_OUTPUT_TRANSFORM_20`` differ by an order of magnitude in cost and in
+#: risk, and are separate workstreams (§spec:op-coverage). The class is
+#: therefore too coarse to key an emitter on, let alone to refuse by: one style
+#: emits while the other does not.
+DISTINGUISHING: dict[str, Callable[[Any], str]] = {
+    "FixedFunction": lambda transform: _enum_member(
+        transform.getStyle(), "FIXED_FUNCTION_"
+    ),
+}
+
+
+def op_label(transform: Any) -> str:
+    """How this compiler names one op, everywhere it names one.
+
+    An op type with a ``DISTINGUISHING`` attribute names it; one without names
+    the type alone.
+    """
+    op = op_name(transform)
+    attribute = DISTINGUISHING.get(op)
+    return f"{op}[{attribute(transform)}]" if attribute is not None else op
+
+
+#: Op label -> emitter.
 REGISTRY: dict[str, Emitter] = {}
 
 
 def register(
-    class_name: str, *, breakpoints: Breakpoints = no_breakpoints
+    label: str, *, breakpoints: Breakpoints = no_breakpoints
 ) -> Callable[[Emit], Emit]:
-    """Register an emitter for an OCIO transform class."""
+    """Register an emitter under the label ``op_label`` gives its op."""
 
     def decorate(emit: Emit) -> Emit:
-        REGISTRY[class_name] = Emitter(emit=emit, breakpoints=breakpoints)
+        REGISTRY[label] = Emitter(emit=emit, breakpoints=breakpoints)
         return emit
 
     return decorate
@@ -154,52 +200,17 @@ def register(
 
 def emitter_for(transform: Any) -> Emitter | None:
     """The emitter for a transform, or ``None`` if the compiler has none."""
-    return REGISTRY.get(type(transform).__name__)
+    return REGISTRY.get(op_label(transform))
 
 
 def supported_ops() -> frozenset[str]:
-    """The op types this compiler emits, as bare names.
+    """The ops this compiler emits, as ``op_label`` names them.
 
     Read off the registry, so it is one source of truth: an op OCIO adds in a
     future release is absent from it and refused, rather than needing a second
     list to be updated before anyone notices (§spec:op-coverage).
     """
-    return frozenset(name.removesuffix("Transform") for name in REGISTRY)
-
-
-def op_name(transform: Any) -> str:
-    """One op's bare type name, as the registry and the census spell it."""
-    return type(transform).__name__.removesuffix("Transform")
-
-
-def _enum_member(value: Any, prefix: str) -> str:
-    """An OCIO enum member's bare name. ``str`` gives ``Class.MEMBER``, and the
-    member repeats its class in the prefix callers drop here."""
-    return str(value).rsplit(".", 1)[-1].removeprefix(prefix)
-
-
-#: Op types whose behaviour is set by an attribute rather than by the type
-#: alone, and the reading that names it. ``FixedFunction`` is two unrelated
-#: transforms sharing a class — ``REC2100_SURROUND`` and
-#: ``ACES_OUTPUT_TRANSFORM_20`` differ by an order of magnitude in cost and in
-#: risk, and are separate workstreams — so a refusal naming only the type
-#: cannot say which one blocked the caller (§spec:op-coverage).
-DISTINGUISHING: dict[str, Callable[[Any], str]] = {
-    "FixedFunctionTransform": lambda transform: _enum_member(
-        transform.getStyle(), "FIXED_FUNCTION_"
-    ),
-}
-
-
-def op_label(transform: Any) -> str:
-    """How a refusal names one op.
-
-    An op type with a distinguishing attribute names it; one without names the
-    type alone.
-    """
-    op = op_name(transform)
-    attribute = DISTINGUISHING.get(type(transform).__name__)
-    return f"{op}[{attribute(transform)}]" if attribute is not None else op
+    return frozenset(REGISTRY)
 
 
 def breakpoints(transform: Any) -> list[float]:
@@ -247,7 +258,7 @@ def _negative_style(transform: Any, supported: tuple[str, ...]) -> str:
     return style
 
 
-@register("MatrixTransform")
+@register("Matrix")
 def emit_matrix(builder: GraphBuilder, transform: Any, x: str) -> str:
     """A 1x1 convolution over the top-left 3x3 (§spec:op-emission).
 
@@ -298,7 +309,7 @@ def range_breakpoints(transform: Any) -> list[float]:
     return [value for value in (min_in, max_in) if not math.isnan(value)]
 
 
-@register("RangeTransform", breakpoints=range_breakpoints)
+@register("Range", breakpoints=range_breakpoints)
 def emit_range(builder: GraphBuilder, transform: Any, x: str) -> str:
     """A clamp, then an affine (§spec:op-emission).
 
@@ -340,7 +351,7 @@ def exponent_breakpoints(transform: Any) -> list[float]:
     return [0.0]
 
 
-@register("ExponentTransform", breakpoints=exponent_breakpoints)
+@register("Exponent", breakpoints=exponent_breakpoints)
 def emit_exponent(builder: GraphBuilder, transform: Any, x: str) -> str:
     """A power, with the sign put back the way the style asks.
 
@@ -429,7 +440,7 @@ def exponent_with_linear_breakpoints(transform: Any) -> list[float]:
     ]
 
 
-@register("ExponentWithLinearTransform", breakpoints=exponent_with_linear_breakpoints)
+@register("ExponentWithLinear", breakpoints=exponent_with_linear_breakpoints)
 def emit_exponent_with_linear(builder: GraphBuilder, transform: Any, x: str) -> str:
     """A monitor curve above the break, a straight line below it.
 
@@ -496,7 +507,7 @@ def log_breakpoints(transform: Any) -> list[float]:
     return [] if _is_inverse(transform) else [0.0]
 
 
-@register("LogTransform", breakpoints=log_breakpoints)
+@register("Log", breakpoints=log_breakpoints)
 def emit_log(builder: GraphBuilder, transform: Any, x: str) -> str:
     """``log(x)/log(base)`` forward, ``base ** x`` inverse.
 
@@ -592,7 +603,7 @@ def log_camera_breakpoints(transform: Any) -> list[float]:
     return curve.log_break if _is_inverse(transform) else curve.lin_break
 
 
-@register("LogCameraTransform", breakpoints=log_camera_breakpoints)
+@register("LogCamera", breakpoints=log_camera_breakpoints)
 def emit_log_camera(builder: GraphBuilder, transform: Any, x: str) -> str:
     """A logarithm above the break, a straight line below it."""
     curve = camera_curve(transform)
@@ -918,7 +929,7 @@ def _half_domain_index(builder: GraphBuilder, x: str) -> tuple[str, str]:
     return position, builder.to_int64(builder.add(binade, sign))
 
 
-@register("Lut1DTransform", breakpoints=lut1d_breakpoints)
+@register("Lut1D", breakpoints=lut1d_breakpoints)
 def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
     """A gather and a lerp over a table (§spec:op-emission).
 
@@ -1018,3 +1029,65 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
     low = builder.op("Gather", [data, lower], axis=0)
     high = builder.op("Gather", [data, upper], axis=0)
     return builder.add(low, builder.mul(frac, builder.sub(high, low)))
+
+
+def surround_curve(transform: Any) -> tuple[float, float]:
+    """One surround op's exponent and its luminance floor, direction applied.
+
+    The op scales every channel by ``Y ** (gamma - 1)``. Luminance is linear in
+    the channels, so it comes out as ``Y ** gamma`` and the inverse is the same
+    expression at ``1/gamma``. The floor moves with it: the inverse clamps in
+    the forward's *output* domain, so its floor is the forward floor's image,
+    ``1e-4 ** gamma``, rather than ``1e-4``.
+
+    The gamma is read rather than checked. OCIO validates the style as carrying
+    exactly one parameter, bounded well away from zero, before a processor
+    reports it.
+    """
+    gamma = float(transform.getParams()[0])
+    if _is_inverse(transform):
+        return 1.0 / gamma - 1.0, REC2100_MIN_LUM**gamma
+    return gamma - 1.0, REC2100_MIN_LUM
+
+
+def rec2100_surround_breakpoints(transform: Any) -> list[float]:
+    """Zero, where the fold onto ``|Y|`` switches, and the floor either side of
+    it.
+
+    Stated on the diagonal. The lattice varies one value per channel rather
+    than a luminance, and the three weights sum to one, so a neutral pixel's
+    luminance is its own value and straddling these three puts samples either
+    side of the clamp.
+    """
+    _, floor = surround_curve(transform)
+    return [0.0, floor, -floor]
+
+
+@register("FixedFunction[REC2100_SURROUND]", breakpoints=rec2100_surround_breakpoints)
+def emit_rec2100_surround(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """A luminance, folded and floored, raised to a power and scaled back on.
+
+    Alone among the emitters here the arithmetic crosses channels: one Y per
+    pixel drives all three, so a per-channel reading would agree on a neutral
+    pixel and disagree on every coloured one.
+
+    The fold and the floor are both OCIO's, and neither is decoration. ``|Y|``
+    keeps a negative pixel's scale tied to its own magnitude rather than
+    collapsing it onto the floor; the floor keeps the ``Pow`` base positive, as
+    ``emit_log``'s does, and ONNX ``Pow`` at a non-positive base with a
+    fractional exponent is NaN.
+    """
+    exponent, floor = surround_curve(transform)
+    weighted = builder.mul(x, builder.per_channel("rec2100_luma", REC2100_LUMA))
+    luminance = builder.op(
+        "ReduceSum",
+        [weighted, builder.constant("rec2100_axis", [CHANNEL_AXIS], dtype=np.int64)],
+        keepdims=1,
+    )
+    floored = builder.op(
+        "Clip",
+        [builder.op("Abs", [luminance]), builder.scalar("rec2100_min_lum", floor)],
+    )
+    return builder.mul(
+        x, builder.pow(floored, builder.scalar("rec2100_exponent", exponent))
+    )

@@ -17,6 +17,7 @@ from ocio2onnx.addressing import (
 )
 from ocio2onnx.builder import CHANNELS
 from ocio2onnx.compiler import compile_processor
+from ocio2onnx.emitters import op_label
 from ocio2onnx.oracle import compare, cpu_reference, lattice, run_graph
 
 
@@ -88,35 +89,35 @@ def check_transform(config, check):
 
 @pytest.fixture(scope="session")
 def config_ops(config):
-    """Every op of one OCIO transform class the pinned config carries.
+    """Every op the pinned config carries under one ``op_label``.
 
-    Walking all 159 transforms is the expensive part, so each class is walked
+    Walking all 159 transforms is the expensive part, so each label is walked
     once per session and the answer kept.
     """
     found: dict[str, list] = {}
 
-    def config_ops(class_name):
-        if class_name not in found:
-            found[class_name] = [
+    def config_ops(label):
+        if label not in found:
+            found[label] = [
                 transform
                 for _, processor in enumerate_transforms(config)
                 for transform in processor.createGroupTransform()
-                if type(transform).__name__ == class_name
+                if op_label(transform) == label
             ]
-        return found[class_name]
+        return found[label]
 
     return config_ops
 
 
 @pytest.fixture(scope="session")
 def op_in(config):
-    """The one op of a class inside a single config transform."""
+    """The one op under a label inside a single config transform."""
 
-    def op_in(class_name, src, dst):
+    def op_in(label, src, dst):
         ops = [
             transform
             for transform in config.getProcessor(src, dst).createGroupTransform()
-            if type(transform).__name__ == class_name
+            if op_label(transform) == label
         ]
         assert len(ops) == 1
         return ops[0]

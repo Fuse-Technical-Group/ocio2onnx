@@ -90,10 +90,10 @@ def test_matrix_declares_no_breakpoints(config):
 
 def register_breakpoints(monkeypatch, *points):
     """Give ``Matrix`` breakpoints it does not have, to exercise the hook."""
-    entry = emitters.REGISTRY["MatrixTransform"]
+    entry = emitters.REGISTRY["Matrix"]
     monkeypatch.setitem(
         emitters.REGISTRY,
-        "MatrixTransform",
+        "Matrix",
         dataclasses.replace(entry, breakpoints=lambda transform: list(points)),
     )
 

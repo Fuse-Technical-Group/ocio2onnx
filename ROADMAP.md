@@ -6,19 +6,10 @@ means the work is not done.
 
 ## Display rendering ops §road:display-rendering
 
-The two `FixedFunction` styles the compiler refuses by name
-(§spec:op-coverage). Both are closed-form — neither needs a 3D LUT in OCIO's own partition — so this is
-sequencing, not a capability gap (§spec:op-coverage). They are separated
-because their cost and their risk differ by an order of magnitude.
-
-### Rec.2100 surround §road:rec2100-surround
-
-Emit `REC2100_SURROUND`, a surround/system-gamma adjustment, unblocking
-the 5 transforms that reach an HLG display (§spec:op-coverage). Small, and
-the only op between this compiler and HLG output — worth taking ahead of
-any scene-referred work, since a consumer wanting HLG today is refused by
-the cheap op rather than the expensive one. The oracle (§spec:verification)
-is what makes a rendering op safe to add at all.
+The `FixedFunction` style the compiler still refuses by name
+(§spec:op-coverage). It is closed-form — it needs no 3D LUT in OCIO's own
+partition — so this is sequencing, not a capability gap. The cheap style,
+`REC2100_SURROUND`, ships; what is left is the expensive one.
 
 ### ACES output transform §road:aces-output-transform
 

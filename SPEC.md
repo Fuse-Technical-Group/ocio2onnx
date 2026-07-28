@@ -67,17 +67,20 @@ who want the transform as a portable artifact.
 Coverage is measured, not assumed. Across
 `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` — every color space in both
 directions against the reference, plus every display view, 159 transforms
-— eight op types appear:
+— eight op types appear. `FixedFunction` is counted as its two styles,
+because they are unrelated transforms sharing a class and the compiler
+emits one of them:
 
 | Op | Occurrences |
 | --- | --- |
 | `Matrix` | 284 |
 | `Range` | 52 |
 | `Lut1D` | 40 |
-| `FixedFunction` | 29 |
 | `Exponent` | 26 |
 | `ExponentWithLinear` | 24 |
 | `LogCamera` | 24 |
+| `FixedFunction[ACES_OUTPUT_TRANSFORM_20]` | 24 |
+| `FixedFunction[REC2100_SURROUND]` | 5 |
 | `Log` | 4 |
 
 **No transform in that config requires a 3D LUT.** The census counts ops;
@@ -86,13 +89,13 @@ what governs build order is how the 159 transforms partition:
 | Transform class | Count |
 | --- | --- |
 | closed-form ops only | 111 |
-| `Lut1D`, half-domain | 14 |
+| `Lut1D`, half-domain | 18 |
 | `Lut1D`, uniform | 6 |
-| refused (`FixedFunction`) | 28 |
+| refused (`ACES_OUTPUT_TRANSFORM_20`) | 24 |
 
 Six closed-form emitters — `Matrix`, `Range`, `Exponent`,
 `ExponentWithLinear`, `Log`, `LogCamera` — cover 111 of the 159 transforms
-with no LUT machinery at all. `Lut1D` adds the remaining 20 and is by a
+with no LUT machinery at all. `Lut1D` adds the remaining 24 and is by a
 wide margin the most involved emitter (§spec:op-emission). Sequencing
 follows that split rather than the op census, which understates how much
 of the config is reachable without a table.
@@ -118,38 +121,46 @@ with no change here. *Why this matters*: the alternative is per-vendor
 implementations against curves whose definitions are not uniformly
 published — unbounded work, and unverifiable.
 
-**`FixedFunction` is refused, by name, at compile.** OCIO reports the op
-list before anything executes, so a transform containing an unimplemented
-op fails naming the op, the transform, and its endpoints, rather than
-emitting a graph that is quietly wrong. *Why refuse rather than
-approximate*: an approximation of a display rendering transform is a
-picture nobody signed off on.
+**An unimplemented op is refused, by name, at compile.** OCIO reports the
+op list before anything executes, so a transform containing one fails
+naming the op, the transform, and its endpoints, rather than emitting a
+graph that is quietly wrong. *Why refuse rather than approximate*: an
+approximation of a display rendering transform is a picture nobody signed
+off on.
 
-**Refused is not unreachable.** Both styles are closed-form — neither
-needs a 3D LUT in OCIO's own GPU partition, which is the measure of
-whether an op can be expressed analytically at all. Refusal is a scope
-and risk decision, and the two styles differ sharply in both:
+**The name is the style, not the class.** `FixedFunction` is two unrelated
+transforms sharing a class, so the class is too coarse to key an emitter on
+and too coarse to refuse by. Every place the compiler names an op — the
+emitter registry, the census, a refusal — uses one label carrying the type
+plus whatever attribute distinguishes one behaviour of it from another.
+That is what lets `REC2100_SURROUND` be emitted while
+`ACES_OUTPUT_TRANSFORM_20` goes on refusing, and it keeps the census
+honest: a row half of which is emitted could be marked neither emitted nor
+refused.
 
-- `REC2100_SURROUND` (5 transforms) is a surround/system-gamma
-  adjustment — a small op, and the only thing standing between this
-  compiler and HLG display output.
+Both styles are closed-form — neither needs a 3D LUT in OCIO's own GPU
+partition, which is the measure of whether an op can be expressed
+analytically at all. What separated them was scope and risk, by an order of
+magnitude in both:
+
+- `REC2100_SURROUND` (5 transforms) is a surround/system-gamma adjustment
+  scaling all three channels by a power of their luminance. Small, and the
+  only thing that stood between this compiler and HLG display output, so
+  it went first. It ships.
 - `ACES_OUTPUT_TRANSFORM_20` (24 transforms) is the ACES 2.0 output
   transform: tone scale, chroma compression, and gamut mapping. Published
   with a reference implementation, and substantial. It is also *the look*
   — the most visible math in any pipeline that runs it — so it is the
   worst candidate for an early port and the best candidate for a careful
-  one.
+  one. Deferred behind a named trigger (§road:aces-output-transform).
 
-**Refusal is by op, not by category.** 131 of the 159 transforms compile;
-28 refuse. Most are the ACES output transforms, where a caller expects it
-— but `Rec.2100-HLG - Display` refuses too, because HLG's surround
-adjustment is `REC2100_SURROUND` rather than a transfer curve. A consumer
-wanting plain HLG encoding is served; one wanting the ACES HLG display
-rendering is not. Stating the boundary as an op set rather than as "view
-transforms are unsupported" is what keeps that case from being a
-surprise. `ocio2onnx census` reports the split for any config, against the
-op set the compiler actually implements rather than a second list beside
-it; `tools/census.py` is a shim over the same code.
+**Refusal is by op, not by category.** 135 of the 159 transforms compile;
+24 refuse, and every one is an ACES 2.0 display rendering. Stating the
+boundary as an op set rather than as "view transforms are unsupported" is
+what makes it predictable: a caller reads which op blocks them, and every
+other view compiles. `ocio2onnx census` reports the split for any config,
+against the op set the compiler actually implements rather than a second
+list beside it; `tools/census.py` is a shim over the same code.
 
 ## How ops emit §spec:op-emission
 *Status: in progress*
@@ -159,6 +170,15 @@ transform introspection. `Matrix` is a 1×1 convolution, `Range` a clamp
 and an affine, the exponential and logarithmic ops elementwise chains.
 ONNX has no per-element branching, so an op with a breakpoint evaluates
 both sides and selects; that costs arithmetic, not correctness.
+
+**`REC2100_SURROUND` is the one op whose arithmetic crosses channels.** A
+single luminance per pixel scales all three, so a per-channel reading of it
+agrees on every neutral pixel and disagrees on every coloured one — a
+misreading nothing but an oracle sampling coloured pixels would catch
+(§spec:verification). Its fold onto `|Y|` and its luminance floor are read
+off OCIO's own renderer rather than chosen, as `Log`'s floor is: the floor
+is `1e-4` forward, and that value's image under the forward op inverse,
+because the inverse clamps in the forward's output domain.
 
 `Lut1D` is the exception, because most of them are half-domain: 34 of the
 40 in the config hold 65536 entries indexed by the bit pattern of the

@@ -39,16 +39,18 @@ ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 #: A closed-form display view.
 OPEN_VIEW = ("sRGB - Display", "Un-tone-mapped")
 
-#: The partition ``verify`` reproduces: the 111 closed-form transforms
-#: §spec:op-coverage measured, plus the 20 carrying a ``Lut1D`` over either
-#: domain in either direction. What is left refuses on ``FixedFunction``.
-VERIFIED = 131
-REFUSED = 28
-TOTAL = 159
+#: An HLG display view, which reaches a display through `REC2100_SURROUND`.
+HLG_VIEW = ("Rec.2100-HLG - Display", "Video (colorimetric)")
 
-#: ``verify`` and the census reach the same 28 by different routes — one
-#: compiles, the other reads the op set — so their agreeing is a measured
-#: fact about this config rather than an identity.
+#: The partition ``verify`` reproduces: the 111 closed-form transforms
+#: §spec:op-coverage measured, plus the 24 carrying a ``Lut1D`` over either
+#: domain in either direction. What is left refuses on the one
+#: ``FixedFunction`` style still deferred. ``verify`` and the census reach that
+#: refusal count by different routes — one compiles, the other reads the op set
+#: — so their agreeing is a measured fact about this config, not an identity.
+VERIFIED = 135
+REFUSED = 24
+TOTAL = 159
 
 
 @pytest.fixture
@@ -86,8 +88,10 @@ def test_compile_verify_holds_the_graph_against_the_cpu_processor(graph, capsys)
     assert "outside tolerance" in printed
 
 
-def test_compile_takes_a_display_view(graph):
-    display, view = OPEN_VIEW
+@pytest.mark.parametrize(("display", "view"), (OPEN_VIEW, HLG_VIEW))
+def test_compile_takes_a_display_view(display, view, graph):
+    """The HLG view is here because a consumer asking for HLG output used to
+    meet a refusal naming `REC2100_SURROUND` (§spec:op-coverage)."""
     assert main(["compile", "--display", display, "--view", view, "-o", graph]) == OK
     recorded = {entry.key: entry.value for entry in onnx.load(graph).metadata_props}
     assert recorded[f"{METADATA_PREFIX}endpoints"].endswith(f"{display} / {view}")
@@ -242,7 +246,7 @@ def test_verify_partitions_the_whole_config_with_nothing_skipped(capsys):
     assert VERIFIED + REFUSED == TOTAL
 
     assert f"24  {ACES_STYLE}" in printed
-    assert "5  FixedFunction[REC2100_SURROUND]" in printed
+    assert "REC2100_SURROUND" not in printed
     assert "Lut1D" not in printed
     assert "worst deviation" in printed
 

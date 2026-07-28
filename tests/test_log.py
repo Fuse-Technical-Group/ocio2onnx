@@ -20,7 +20,7 @@ from ocio2onnx.oracle import cpu_reference, run_graph
 
 BASES = (2.0, math.e, 10.0)
 
-LOG = "LogTransform"
+LOG = "Log"
 
 
 def log_transform(base, *, inverse=False):

@@ -44,6 +44,10 @@ PRECISION_KEY = f"{METADATA_PREFIX}precision"
 CHANNEL_SHAPE = (1, CHANNELS, 1, 1)
 SCALAR_SHAPE = (1,)
 
+#: Where the channels sit in ``IMAGE_SHAPE``, for an op that reduces across
+#: them rather than elementwise along them.
+CHANNEL_AXIS = 1
+
 
 class GraphBuilder:
     """Nodes and initializers, accumulated in emission order."""

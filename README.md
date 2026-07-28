@@ -137,6 +137,14 @@ ocio2onnx verify [--config URI]
 Against the pinned ACES Studio config: **111 verified, 48 refused, 0
 failed, 0 skipped, 159 total**.
 
+## Trusting a config
+
+Loading a config is trusting it. An OCIO config may reference LUT files by
+relative path, and OCIO reads them from wherever the config's search path
+points — so `--config` on an untrusted file is a local file read on that
+file's terms, not this compiler's. Point it at configs you would run
+`ociocheck` on.
+
 ## Status
 
 The closed-form compiler ships, with the oracle harness. `Lut1D` and the

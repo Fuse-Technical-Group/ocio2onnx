@@ -6,6 +6,12 @@ the result as an ordinary forward half-domain table. So there is one gather
 for both directions, and the inversion's own decisions — the grid, and what a
 flat stretch of the forward table inverts to — are what these tests pin.
 
+Nothing in the optimized op list arrives inverse any more; OCIO pre-inverts
+under ``OPTIMIZATION_LUT_INV_FAST``. The inverse tests therefore read the op
+list the config declares, through ``op_in``, and compare against the processor
+OCIO builds from it — which is the shape of op list an arbitrary config still
+hands the compiler.
+
 Two domains reach the same gather, and only the index separates them. A
 uniform table's index is OCIO's ``clip(x, 0, 1) * (length - 1)``. A
 half-domain table's is the bit pattern of the input rounded to float16, which
@@ -23,6 +29,8 @@ The upper index is ``i0 + (1 if frac > 0 else 0)`` rather than
 and ``i0 + 1`` reads past the end; the ``frac > 0`` form keeps the top of the
 table in range without a second clamp.
 """
+
+import collections
 
 import numpy as np
 import PyOpenColorIO as OCIO
@@ -45,10 +53,12 @@ UNIFORM_SPACES = (
     "CanonLog3 CinemaGamut D55",
 )
 
-#: The eight pairs whose ``Lut1D`` arrives inverse — the transforms this
-#: workstream unblocks. The ninth inverse op in the config sits in
-#: ``Rec.2100-HLG - Display -> ref``, which refuses on ``FixedFunction``
-#: whatever this emitter does.
+#: The nine pairs whose ``Lut1D`` arrives inverse as the config *declares* it,
+#: which is how ``op_in`` reads an op. The optimized list the compiler walks
+#: has none: ``OPTIMIZATION_LUT_INV_FAST`` rewrites every invertible one into a
+#: forward half-domain table first (§spec:op-emission). So these are the pairs
+#: that reach the compile-time inversion when a caller compiles the transform
+#: OCIO built rather than the one OCIO runs.
 INVERSE_PAIRS = (
     ("Rec.2100-PQ - Display", REFERENCE),
     ("ST2084-P3-D65 - Display", REFERENCE),
@@ -58,6 +68,7 @@ INVERSE_PAIRS = (
     (REFERENCE, "Apple Log"),
     (REFERENCE, "CanonLog2 CinemaGamut D55"),
     (REFERENCE, "CanonLog3 CinemaGamut D55"),
+    ("Rec.2100-HLG - Display", REFERENCE),
 )
 
 #: Five pairs whose forward direction carries a half-domain table: two display
@@ -70,15 +81,25 @@ HALF_DOMAIN_PAIRS = (
     ("ADX16", REFERENCE),
 )
 
-#: Measured across the pinned config (§spec:op-coverage).
-HALF_DOMAIN_OPS = 34
-HALF_DOMAIN_FORWARD_OPS = 28
-HALF_DOMAIN_INVERSE_OPS = 6
-UNIFORM_OPS = 6
-FORWARD_OPS = 31
-INVERSE_OPS = 9
+#: Measured over the op list the compiler walks, which is OCIO's optimized one
+#: (§spec:op-coverage). Every op arrives forward and most arrive half-domain,
+#: both for the same reason: ``OPTIMIZATION_LUT_INV_FAST`` rewrites an
+#: invertible inverse table into a forward half-domain one, which is where
+#: three of the six uniform ops went.
+HALF_DOMAIN_OPS = 37
+UNIFORM_OPS = 3
+FORWARD_OPS = 40
+INVERSE_OPS = 0
 HALF_DOMAIN_LENGTH = 65536
 UNIFORM_LENGTH = 4096
+
+#: The interpolations those ops report. A table OCIO's optimizer built carries
+#: no interpolation of its own, and OCIO resolves that to linear.
+CONFIG_INTERPOLATIONS = {"INTERP_DEFAULT": 9, "INTERP_LINEAR": 31}
+
+#: The one op whose three channels disagree, and the rest that share a curve.
+PER_CHANNEL_OPS = 1
+SHARED_CURVE_OPS = 39
 
 #: Every half value in bit-pattern order, which is the order a half-domain
 #: table is indexed in.
@@ -243,39 +264,58 @@ def test_the_pinned_configs_domains_are_what_the_specification_counted(config_op
 
 
 def test_the_pinned_configs_directions_are_what_the_specification_counted(config_ops):
+    """None arrives inverse. OCIO pre-inverts an invertible 1D LUT under
+    ``OPTIMIZATION_LUT_INV_FAST``, which §spec:verification sets for an
+    unrelated reason, so the compile-time inversion below serves an op list
+    that reaches the compiler still inverse rather than this config."""
     inverse = [is_inverse(transform) for transform in config_ops(LUT1D)]
     assert inverse.count(True) == INVERSE_OPS
     assert inverse.count(False) == FORWARD_OPS
 
 
-def test_the_half_domain_ops_split_by_direction_as_the_coverage_claims(config_ops):
-    """The half-domain workstream reaches the forward ops alone, so the split
-    is what it moves rather than the 34."""
-    inverse = [
-        is_inverse(transform)
-        for transform in config_ops(LUT1D)
-        if transform.getInputHalfDomain()
-    ]
-    assert inverse.count(False) == HALF_DOMAIN_FORWARD_OPS
-    assert inverse.count(True) == HALF_DOMAIN_INVERSE_OPS
+def test_no_domain_is_left_carrying_an_inverse_op(config_ops):
+    """Stated per domain rather than over the 40, because the rewrite is what
+    moves an op between them: a uniform table inverted onto the half domain
+    leaves the uniform count and joins the half-domain one."""
+    for half_domain in (True, False):
+        assert not [
+            transform
+            for transform in config_ops(LUT1D)
+            if transform.getInputHalfDomain() is half_domain and is_inverse(transform)
+        ]
 
 
 def test_every_lut1d_in_the_pinned_config_is_linear_and_unadjusted(config_ops):
     """The parameters the emitter refuses do not occur, so refusing them costs
-    nothing here and keeps a config that does use one from being approximated."""
+    nothing here and keeps a config that does use one from being approximated.
+
+    Two interpolations reach the emitter, not one. A table OCIO's optimizer
+    built reports ``INTERP_DEFAULT``, which OCIO resolves to linear — refusing
+    it would refuse every op the rewrite produced.
+    """
+    interpolations = collections.Counter(
+        str(transform.getInterpolation()).rpartition(".")[2]
+        for transform in config_ops(LUT1D)
+    )
+    assert dict(interpolations) == CONFIG_INTERPOLATIONS
     for transform in config_ops(LUT1D):
-        assert str(transform.getInterpolation()).endswith("INTERP_LINEAR")
         assert str(transform.getHueAdjust()).endswith("HUE_NONE")
         assert not transform.getOutputRawHalfs()
 
 
-def test_every_lut1d_in_the_pinned_config_shares_one_curve_across_channels(config_ops):
-    """Measured rather than assumed: OCIO reports a triple per entry, so a
-    per-channel table is a shape another config can take."""
+def test_one_lut1d_in_the_pinned_config_reads_per_channel(config_ops):
+    """Measured rather than assumed: OCIO reports a triple per entry, and one
+    op in this config uses all three. ``ref -> Apple Log`` is a per-channel
+    table, so the emitter's channel-major path is reached by the config and not
+    only by a table a test built."""
+    shared = [
+        bool((table == table[:, :1]).all())
+        for table in map(emitters.lut1d_table, config_ops(LUT1D))
+    ]
+    assert shared.count(False) == PER_CHANNEL_OPS
+    assert shared.count(True) == SHARED_CURVE_OPS
     for transform in config_ops(LUT1D):
-        table = emitters.lut1d_table(transform)
-        assert table.shape == (transform.getLength(), 3)
-        assert (table == table[:, :1]).all()
+        assert emitters.lut1d_table(transform).shape == (transform.getLength(), 3)
 
 
 @pytest.mark.parametrize("space", UNIFORM_SPACES)
@@ -438,8 +478,9 @@ def test_a_table_that_overflows_float32_lerps_to_the_finite_limit_not_to_nan(
 
 
 def test_a_per_channel_table_verifies(check_transform):
-    """The only cover for the per-channel path: no op in the pinned config
-    takes it."""
+    """Three curves that disagree everywhere but at the ends. One op in the
+    pinned config reads per channel; this reaches the same path without
+    depending on it."""
     result = check_transform(per_channel())
     assert result.ok, str(result)
 
@@ -481,31 +522,31 @@ def test_a_default_interpolation_is_emitted_rather_than_refused(config):
 
 
 def test_a_forward_half_domain_lut_is_emitted_rather_than_refused(config_ops):
-    """The refusal this workstream lifted. Every forward half-domain op in the
-    pinned config emits, and so does a bare one."""
+    """The refusal this workstream lifted. Every half-domain op in the pinned
+    config emits, and so does a bare one."""
     half = [
-        transform
-        for transform in config_ops(LUT1D)
-        if transform.getInputHalfDomain() and not is_inverse(transform)
+        transform for transform in config_ops(LUT1D) if transform.getInputHalfDomain()
     ]
-    assert len(half) == HALF_DOMAIN_FORWARD_OPS
+    assert len(half) == HALF_DOMAIN_OPS
     assert emit(half[0])
     assert emit(synthetic(HALF_DOMAIN_LENGTH, inputHalfDomain=True))
 
 
-def test_an_inverse_lut_is_emitted_rather_than_refused(config_ops):
-    """The refusal this workstream lifted. Every inverse op in the pinned
-    config emits, including the one inside a transform that refuses anyway, so
-    the monotonicity guard is measured against all nine rather than eight."""
-    inverse = [transform for transform in config_ops(LUT1D) if is_inverse(transform)]
-    assert len(inverse) == INVERSE_OPS
-    for transform in inverse:
+def test_an_inverse_lut_is_emitted_rather_than_refused(op_in):
+    """The refusal this workstream lifted, now held on the op list OCIO builds
+    rather than the one it runs: the optimizer pre-inverts, so nothing the
+    compiler walks arrives inverse. Every one of the nine the config declares
+    emits, which is what measures the monotonicity guard against all of them
+    rather than against the two the tests below name."""
+    for src, dst in INVERSE_PAIRS:
+        transform = op_in(LUT1D, src, dst)
+        assert is_inverse(transform)
         assert emit(transform)
 
 
 @pytest.mark.parametrize(("src", "dst"), INVERSE_PAIRS)
 def test_a_transform_carrying_an_inverse_lut_verifies(src, dst, config, check):
-    """The eight transforms this workstream unblocks, end to end."""
+    """The nine transforms this workstream unblocks, end to end."""
     result = check(config.getProcessor(src, dst), f"{src} -> {dst}")
     assert result.ok, str(result)
     assert result.compared > 0

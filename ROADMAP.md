@@ -7,9 +7,13 @@ means the work is not done.
 ## Oracle evidence §road:oracle-evidence
 
 Close the gap between what the oracle compares and what it certifies
-(§spec:evidence-floor). Every workstream below is verified by this harness,
-so a blind spot in it is inherited by all of them — which is what puts it
-first, ahead of work that is larger and more visible.
+(§spec:evidence-floor). The pinned config does not exercise the blind spot:
+across it no transform disagrees on the class of a non-finite sample, and
+none is non-finite everywhere. What reaches it is a config a *user* supplies
+(§spec:problem-statement) — a NaN coefficient in a config-declared matrix
+gets there in one step, and the harness would report a graph certified on no
+evidence. It is a guard on the arbitrary input, not protection for the work
+below it.
 
 ### Non-finite agreement and the evidence floor §road:nonfinite-agreement
 
@@ -21,26 +25,9 @@ Classify each non-finite sample as `+inf`, `-inf`, or NaN and require the
 graph's class to match the reference's, and require at least one finite
 comparison before a graph verifies (§spec:evidence-floor). Both the
 `--verify` flag and the `verify` sweep read the same predicate, so the
-partition over the pinned config is the regression test — 135 verified and
-24 refused, unchanged, with the 12 overflowing transforms now agreeing on
-their 36 non-finite samples rather than skipping them.
-
-## Display rendering ops §road:display-rendering
-
-The `FixedFunction` style the compiler still refuses by name
-(§spec:op-coverage). It is closed-form — it needs no 3D LUT in OCIO's own
-partition — so this is sequencing, not a capability gap. The cheap style,
-`REC2100_SURROUND`, ships; what is left is the expensive one.
-
-### ACES output transform §road:aces-output-transform
-
-Emit `ACES_OUTPUT_TRANSFORM_20` — tone scale, chroma compression, gamut
-mapping — unblocking the 24 display views (§spec:op-coverage). Deferred
-behind a named trigger: the first consumer running a scene-referred
-working space and needing a display rendering. *Why last*: this transform
-is the image's look, so an error in it is both the most visible failure
-available and the least likely to be caught by anything except the oracle
-sweep (§spec:verification).
+partition over the pinned config is the regression test — 159 verified and
+0 refused, unchanged, with the 12 overflowing transforms now agreeing on
+their non-finite samples rather than skipping them.
 
 ## Live parameters §road:live-parameters
 

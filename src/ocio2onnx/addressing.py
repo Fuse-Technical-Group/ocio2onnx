@@ -36,6 +36,34 @@ METADATA_PREFIX = "ocio2onnx."
 #: so catching the latter alone lets a config naming an absent LUT through.
 OCIO_ERRORS = (OCIO.Exception, OCIO.ExceptionMissingFile)
 
+#: The optimization level every processor this module hands out is resolved at.
+#:
+#: It lives here, rather than beside the oracle that measures against it,
+#: because the compiler and the oracle have to read **one** op list. A
+#: processor reports the ops as the config declares them; OCIO's CPU renderer
+#: runs an optimized rewrite of that list, and the two are the same transform
+#: but not the same arithmetic. A display view holds two adjacent matrices that
+#: compose to an identity — OCIO folds them and the compiler used to emit both,
+#: which round-trips a near-black channel to about 1e-10 instead of to zero. A
+#: mirrored gamma downstream turns that into 6e-5, past tolerance, on a value
+#: the reference reports as exactly black.
+#:
+#: ``OPTIMIZATION_FAST_LOG_EXP_POW`` is cleared. It is an approximate ``pow``,
+#: ``log``, and ``exp`` whose error exceeds the verification tolerance, so
+#: leaving it on would measure a math library rather than this compiler's
+#: reading of the config: across the pinned config 110 of the 111 closed-form
+#: transforms verify against OCIO's fast path and 111 of 111 against its
+#: accurate one. Which flags are set is a correctness decision, not a tuning
+#: knob (§spec:verification); ``tests/test_oracle.py`` pins it.
+#:
+#: ``OPTIMIZATION_LUT_INV_FAST`` stays set, which is the same decision read the
+#: other way: cleared, OCIO's inverse ``Lut1D`` renderer parts company with its
+#: own fast path at 5 samples, and the fast path is the one that agrees with
+#: the encoding.
+OPTIMIZATION_FLAGS = OCIO.OptimizationFlags(
+    OCIO.OPTIMIZATION_DEFAULT.value & ~OCIO.OPTIMIZATION_FAST_LOG_EXP_POW.value
+)
+
 
 class AddressError(ValueError):
     """A compile request that the loaded config cannot resolve."""
@@ -174,13 +202,17 @@ def enumerate_transforms(
 def _processor(config: OCIO.Config, *request: Any, uri: str) -> OCIO.Processor:
     """Build a processor, reporting OCIO's own refusal as an ``AddressError``.
 
+    Optimized at `OPTIMIZATION_FLAGS` before it leaves, so every caller — the
+    compiler, the census, the oracle — walks the op list OCIO's own renderer
+    runs rather than the one the config declares.
+
     A config parses long before its `FileTransform` references resolve, so a
     config naming a LUT that is missing or unreadable fails here rather than
     at load. That is still a request the loaded config cannot serve, so the
     caller sees the one error type it already handles.
     """
     try:
-        return config.getProcessor(*request)
+        return config.getProcessor(*request).getOptimizedProcessor(OPTIMIZATION_FLAGS)
     except OCIO_ERRORS as exc:
         raise AddressError(
             f"{_label(config, uri)} cannot build a processor: {exc}"

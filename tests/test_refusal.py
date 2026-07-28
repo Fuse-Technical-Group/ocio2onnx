@@ -4,6 +4,11 @@ The check is written against the supported set rather than against a list of
 known-bad ops, so it is a statement about what the compiler emits. An op a
 future OCIO release adds is refused because nothing registered an emitter for
 it, not dropped because nothing recognised it (§spec:op-coverage).
+
+Every subject here is built rather than found. The pinned config carries
+nothing this compiler refuses, so the boundary is not visible from inside it —
+and the boundary is for the arbitrary config a caller hands over
+(§spec:problem-statement), which is what these transforms stand in for.
 """
 
 import PyOpenColorIO as OCIO
@@ -26,25 +31,15 @@ PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 #: can raise.
 LUT_HUE_ADJUST = OCIO.HUE_DW3
 
-#: The display view the compiler refuses, and the style that blocks it.
-ACES_VIEW = ("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
-ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
+#: A `FixedFunction` style with no emitter, and how a refusal spells it. Both
+#: styles the pinned config uses are emitted, so this is the class's third
+#: behaviour standing in for the op an OCIO release has not shipped yet.
+UNEMITTED_STYLE = OCIO.FIXED_FUNCTION_ACES_RED_MOD_03
+UNEMITTED_LABEL = "FixedFunction[ACES_RED_MOD_03]"
 
 #: Two unimplemented ops in one transform, the second behind the first.
 #: Emitting until something unsupported turns up would name one and stop.
-#: Built rather than found: one op type is left unimplemented in the pinned
-#: config (§road:display-rendering), so nothing in it carries two.
 CROWDED_OPS = ["GradingPrimary", "GradingTone"]
-
-
-@pytest.fixture
-def resolve(config):
-    """Resolve a display view against the pinned config."""
-
-    def resolve(display, view):
-        return resolve_display_view(config, display, view, uri=DEFAULT_CONFIG)
-
-    return resolve
 
 
 @pytest.fixture
@@ -71,6 +66,12 @@ def crowded(bare):
     return bare(group, "crowded")
 
 
+@pytest.fixture
+def unemitted_style(bare):
+    """A transform carrying the `FixedFunction` style nothing emits."""
+    return bare(OCIO.FixedFunctionTransform(UNEMITTED_STYLE), "unemitted style")
+
+
 def test_a_transform_the_compiler_emits_refuses_nothing(config):
     resolved = resolve_colorspaces(config, *PAIR, uri=DEFAULT_CONFIG)
     assert unsupported_ops(resolved.processor) == []
@@ -87,6 +88,7 @@ def test_the_supported_set_is_read_off_the_registry():
         "LogCamera",
         "Lut1D",
         "FixedFunction[REC2100_SURROUND]",
+        "FixedFunction[ACES_OUTPUT_TRANSFORM_20]",
     }
 
 
@@ -110,10 +112,13 @@ def test_an_op_type_this_compiler_has_never_seen_is_refused(config):
     assert unsupported_ops(processor) == ["GradingPrimary"]
 
 
-def test_the_refusal_names_the_fixed_function_style(resolve):
-    """`FixedFunction` alone cannot say which of the two styles blocked the
-    caller, and §spec:op-coverage sequences them into separate workstreams."""
-    assert unsupported_ops(resolve(*ACES_VIEW).processor) == [ACES_STYLE]
+def test_the_refusal_names_the_fixed_function_style(unemitted_style):
+    """`FixedFunction` alone cannot say which behaviour of the class blocked
+    the caller, and the class is emitted for two of them. Refusing by the class
+    would refuse those too; refusing by the label refuses one style
+    (§spec:op-coverage)."""
+    assert unsupported_ops(unemitted_style.processor) == [UNEMITTED_LABEL]
+    assert "FixedFunction" not in supported_ops()
 
 
 def test_a_refusal_an_op_list_cannot_see_is_raised_at_emission(bare):
@@ -148,13 +153,12 @@ def test_every_unimplemented_op_is_named_not_only_the_first(crowded):
     assert unsupported_ops(crowded.processor) == CROWDED_OPS
 
 
-def test_the_refusal_names_the_ops_the_transform_and_its_endpoints(resolve):
-    resolved = resolve(*ACES_VIEW)
+def test_the_refusal_names_the_ops_the_transform_and_its_endpoints(unemitted_style):
     with pytest.raises(UnsupportedOpError) as caught:
-        compile_processor(resolved)
+        compile_processor(unemitted_style)
     message = str(caught.value)
-    assert ACES_STYLE in message
-    assert resolved.endpoints in message
+    assert UNEMITTED_LABEL in message
+    assert unemitted_style.endpoints in message
     assert "refused rather than approximated" in message
 
 

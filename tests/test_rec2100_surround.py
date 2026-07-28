@@ -16,7 +16,7 @@ import pytest
 
 from ocio2onnx import emitters
 from ocio2onnx.addressing import enumerate_transforms
-from ocio2onnx.compiler import unsupported_ops
+from ocio2onnx.compiler import op_names, unsupported_ops
 from ocio2onnx.emitters import (
     REC2100_LUMA,
     REC2100_MIN_LUM,
@@ -42,8 +42,10 @@ UNBLOCKED = (
     f"view {HLG_DISPLAY}/Video (colorimetric)",
 )
 
-#: The fifth, which goes on refusing because it carries the other style too.
-STILL_REFUSED = f"view {HLG_DISPLAY}/ACES 2.0 - HDR 1000 nits (P3 D65)"
+#: The fifth, which went on refusing after this op shipped because it carries
+#: the other style too. It is named apart from the four for that reason: this
+#: op emitting did not make it emittable, and the other style shipping did.
+CARRIES_BOTH = f"view {HLG_DISPLAY}/ACES 2.0 - HDR 1000 nits (P3 D65)"
 
 #: A gamma either side of one, so no test passes on the identity. The pinned
 #: config carries 1/1.2.
@@ -99,26 +101,33 @@ def carrying_the_surround(config):
 
 
 def test_the_registry_keys_on_the_style_rather_than_the_class():
-    """Registering the class would claim the other style too, and that style's
-    refusal is what §road:aces-output-transform is deferred behind."""
+    """Both styles are emitted now, and still under separate keys: they are
+    unrelated transforms sharing a class, so one key for the class would point
+    two behaviours at this emitter's arithmetic."""
     assert SURROUND in emitters.REGISTRY
     assert "FixedFunctionTransform" not in emitters.REGISTRY
-    assert SURROUND in supported_ops()
-    assert ACES not in supported_ops()
+    assert "FixedFunction" not in emitters.REGISTRY
+    assert {SURROUND, ACES} <= supported_ops()
+    assert emitters.REGISTRY[SURROUND] is not emitters.REGISTRY[ACES]
 
 
 def test_the_config_carries_the_op_where_the_specification_counted_it(
     carrying_the_surround,
 ):
-    assert set(carrying_the_surround) == {*UNBLOCKED, STILL_REFUSED}
+    assert set(carrying_the_surround) == {*UNBLOCKED, CARRIES_BOTH}
 
 
-def test_the_transform_carrying_both_styles_refuses_on_the_one_left(
-    carrying_the_surround,
-):
-    """The op is gone from the refusal and the transform is not: one style
-    emitted does not make the other emittable."""
-    assert unsupported_ops(carrying_the_surround[STILL_REFUSED]) == [ACES]
+def test_the_transform_carrying_both_styles_verifies(carrying_the_surround, check):
+    """It refused on `ACES_OUTPUT_TRANSFORM_20` while that style had no
+    emitter, so it is the one transform here that says the two keys reach two
+    emitters: both styles run over the same pixel and the result agrees with
+    OCIO."""
+    processor = carrying_the_surround[CARRIES_BOTH]
+    assert unsupported_ops(processor) == []
+    assert {SURROUND, ACES} <= set(op_names(processor))
+    result = check(processor, CARRIES_BOTH)
+    assert result.ok, str(result)
+    assert result.compared > 0
 
 
 def test_every_config_transform_the_op_unblocks_verifies(carrying_the_surround, check):

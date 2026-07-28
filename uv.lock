@@ -331,7 +331,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
     { name = "onnx", specifier = ">=1.17" },
     { name = "onnxruntime", marker = "extra == 'verify'", specifier = ">=1.19" },
-    { name = "opencolorio", specifier = ">=2.4,<3" },
+    { name = "opencolorio", specifier = ">=2.5,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
 ]

@@ -14,9 +14,9 @@ import pytest
 from ocio2onnx import emitters
 from ocio2onnx.addressing import (
     METADATA_PREFIX,
+    Resolved,
     enumerate_transforms,
     resolve_colorspaces,
-    resolve_display_view,
 )
 from ocio2onnx.builder import (
     IMAGE_SHAPE,
@@ -180,11 +180,25 @@ def test_a_swapped_row_fails_verification_diagnosably(config, config_uri):
 
 def test_an_unimplemented_op_is_refused_by_name(config, config_uri):
     """A ``Matrix`` beside an op the compiler has no emitter for does not make
-    the transform emittable."""
-    resolved = resolve_display_view(
-        config, "sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)", uri=config_uri
+    the transform emittable.
+
+    Built rather than found: every op the pinned config carries now emits, and
+    a `FixedFunction` style with no emitter is the nearest stand-in for the op
+    an OCIO release has not shipped yet.
+    """
+    group = OCIO.GroupTransform()
+    group.appendTransform(matrix_transform(np.eye(4)))
+    group.appendTransform(
+        OCIO.FixedFunctionTransform(OCIO.FIXED_FUNCTION_ACES_RED_MOD_03)
     )
-    with pytest.raises(UnsupportedOpError, match="FixedFunction"):
+    resolved = Resolved(
+        processor=config.getProcessor(group),
+        config_name=config.getName(),
+        config_uri=config_uri,
+        endpoints="matrix beside an unemittable op",
+    )
+    assert op_names(resolved.processor)[0] == "Matrix"
+    with pytest.raises(UnsupportedOpError, match=r"FixedFunction\[ACES_RED_MOD_03\]"):
         compile_processor(resolved)
 
 

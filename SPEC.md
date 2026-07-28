@@ -62,18 +62,17 @@ consumers who want OCIO in-process, where this project serves consumers
 who want the transform as a portable artifact.
 
 ## Op coverage §spec:op-coverage
-*Status: in progress*
+*Status: complete*
 
 Coverage is measured, not assumed. Across
 `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` — every color space in both
 directions against the reference, plus every display view, 159 transforms
-— eight op types appear. `FixedFunction` is counted as its two styles,
-because they are unrelated transforms sharing a class and the compiler
-emits one of them:
+— nine op labels appear. `FixedFunction` is counted as its two styles,
+because they are unrelated transforms sharing a class:
 
 | Op | Occurrences |
 | --- | --- |
-| `Matrix` | 284 |
+| `Matrix` | 186 |
 | `Range` | 52 |
 | `Lut1D` | 40 |
 | `Exponent` | 26 |
@@ -83,34 +82,43 @@ emits one of them:
 | `FixedFunction[REC2100_SURROUND]` | 5 |
 | `Log` | 4 |
 
-**No transform in that config requires a 3D LUT.** The census counts ops;
-what governs build order is how the 159 transforms partition:
+**That census counts the ops OCIO runs, not the ops the config declares.**
+A processor reports its op list as written; OCIO's renderer runs an
+optimized rewrite of it, and the compiler walks the rewrite so that the
+emitted graph and the oracle measure the same arithmetic
+(§spec:verification). The difference is not cosmetic. The declared list
+holds 284 matrices, and a display view holds two adjacent ones that
+compose to an identity: emitting both round-trips a near-black channel to
+about 1e-10 rather than to zero, which a mirrored gamma further down the
+view turns into 6e-5 against a reference of exactly black.
+
+**No transform in that config requires a 3D LUT.** How the 159 partition:
 
 | Transform class | Count |
 | --- | --- |
 | closed-form ops only | 111 |
-| `Lut1D`, half-domain | 18 |
-| `Lut1D`, uniform | 6 |
-| refused (`ACES_OUTPUT_TRANSFORM_20`) | 24 |
+| `Lut1D`, half-domain | 37 |
+| `Lut1D`, uniform | 3 |
+| a fixed function, no table | 8 |
 
 Six closed-form emitters — `Matrix`, `Range`, `Exponent`,
-`ExponentWithLinear`, `Log`, `LogCamera` — cover 111 of the 159 transforms
-with no LUT machinery at all. `Lut1D` adds the remaining 24 and is by a
-wide margin the most involved emitter (§spec:op-emission). Sequencing
-follows that split rather than the op census, which understates how much
-of the config is reachable without a table.
+`ExponentWithLinear`, `Log`, `LogCamera` — cover 111 of the 159 with no
+LUT machinery at all. `Lut1D` adds 40 more and is by a wide margin the
+most involved emitter (§spec:op-emission). The two fixed functions appear
+in 29 transforms, 21 of which carry a table as well and are counted under
+it. Nothing in the config refuses.
 
-OCIO's own GPU path needs a sampled texture for 48 transforms — more than
-this compiler does. Eight of those carry no `Lut1D` op at all: OCIO's
-shader baked a closed-form `Exponent` or `ExponentWithLinear` into a
-texture, and all eight are transforms this compiler refuses anyway. Where
-OCIO's shaders sample, this compiler evaluates.
+OCIO's own GPU path needs a sampled texture for 48 of the 159 — more than
+this compiler does, which is none. Eight of those carry no `Lut1D` op at
+all: OCIO's shader baked a closed-form `Exponent` or `ExponentWithLinear`
+into a texture. Where OCIO's shaders sample, this compiler evaluates.
 
 **Direction is a second axis.** Ops arrive both ways: 18 of 26 `Exponent`,
 17 of 24 `ExponentWithLinear`, 12 of 24 `LogCamera`, and 2 of 4 `Log` are
-inverse. `Matrix` and `Range` never are, because OCIO folds them. The
-inverse of a closed-form op is closed-form, so the six emitters are about
-eleven code paths — cheap, but not free, and not cheap at all for `Lut1D`.
+inverse. `Matrix`, `Range`, and `Lut1D` never are, because OCIO folds or
+pre-inverts them before the compiler sees them. The inverse of a
+closed-form op is closed-form, so the six emitters are about eleven code
+paths — cheap, but not free.
 
 **Vendor curves are data, not code.** `LogCamera` is one parametric op —
 base, log-side slope and offset, lin-side slope and offset, and a linear
@@ -132,35 +140,29 @@ off on.
 transforms sharing a class, so the class is too coarse to key an emitter on
 and too coarse to refuse by. Every place the compiler names an op — the
 emitter registry, the census, a refusal — uses one label carrying the type
-plus whatever attribute distinguishes one behaviour of it from another.
-That is what lets `REC2100_SURROUND` be emitted while
-`ACES_OUTPUT_TRANSFORM_20` goes on refusing, and it keeps the census
-honest: a row half of which is emitted could be marked neither emitted nor
-refused.
+plus whatever attribute distinguishes one behaviour of it from another. It
+kept the census honest while one style emitted and the other refused, and
+it is what an OCIO release adding a third style will land against.
 
 Both styles are closed-form — neither needs a 3D LUT in OCIO's own GPU
 partition, which is the measure of whether an op can be expressed
 analytically at all. What separated them was scope and risk, by an order of
-magnitude in both:
+magnitude in both. `REC2100_SURROUND` (5 transforms) scales all three
+channels by a power of their luminance, and was the only thing standing
+between this compiler and HLG display output, so it went first.
+`ACES_OUTPUT_TRANSFORM_20` (24 transforms) is *the look* — the most visible
+math in any pipeline that runs it — which made it the worst candidate for
+an early port and the best candidate for a careful one. It went last.
 
-- `REC2100_SURROUND` (5 transforms) is a surround/system-gamma adjustment
-  scaling all three channels by a power of their luminance. Small, and the
-  only thing that stood between this compiler and HLG display output, so
-  it went first. It ships.
-- `ACES_OUTPUT_TRANSFORM_20` (24 transforms) is the ACES 2.0 output
-  transform: tone scale, chroma compression, and gamut mapping. Published
-  with a reference implementation, and substantial. It is also *the look*
-  — the most visible math in any pipeline that runs it — so it is the
-  worst candidate for an early port and the best candidate for a careful
-  one. Deferred behind a named trigger (§road:aces-output-transform).
-
-**Refusal is by op, not by category.** 135 of the 159 transforms compile;
-24 refuse, and every one is an ACES 2.0 display rendering. Stating the
-boundary as an op set rather than as "view transforms are unsupported" is
-what makes it predictable: a caller reads which op blocks them, and every
-other view compiles. `ocio2onnx census` reports the split for any config,
-against the op set the compiler actually implements rather than a second
-list beside it; `tools/census.py` is a shim over the same code.
+**Refusal is by op, not by category.** Every transform in the pinned config
+compiles, so the boundary is not visible from inside it. It is still stated
+as an op set rather than as a category, because that is what makes it
+predictable for the arbitrary config a caller hands over
+(§spec:problem-statement): the answer names the op that blocks them, and
+nothing is refused for the kind of transform it is. `ocio2onnx census`
+reports the split for any config against the op set the compiler actually
+implements rather than a second list beside it; `tools/census.py` is a shim
+over the same code.
 
 ## How ops emit §spec:op-emission
 *Status: in progress*
@@ -171,8 +173,8 @@ and an affine, the exponential and logarithmic ops elementwise chains.
 ONNX has no per-element branching, so an op with a breakpoint evaluates
 both sides and selects; that costs arithmetic, not correctness.
 
-**`REC2100_SURROUND` is the one op whose arithmetic crosses channels.** A
-single luminance per pixel scales all three, so a per-channel reading of it
+**Two ops' arithmetic crosses channels.** `REC2100_SURROUND` scales all
+three by a single luminance per pixel, so a per-channel reading of it
 agrees on every neutral pixel and disagrees on every coloured one — a
 misreading nothing but an oracle sampling coloured pixels would catch
 (§spec:verification). Its fold onto `|Y|` and its luminance floor are read
@@ -180,11 +182,43 @@ off OCIO's own renderer rather than chosen, as `Log`'s floor is: the floor
 is `1e-4` forward, and that value's image under the forward op inverse,
 because the inverse clamps in the forward's output domain.
 
-`Lut1D` is the exception, because most of them are half-domain: 34 of the
-40 in the config hold 65536 entries indexed by the bit pattern of the
-input rounded to float16, not by a normalized coordinate. Standard ONNX
-has no bit-reinterpreting cast, so the index has to be arrived at some
-other way.
+**`ACES_OUTPUT_TRANSFORM_20` crosses them further: the whole op runs inside
+a colour appearance model.** Every intermediate is one scalar per pixel —
+lightness, colourfulness, hue — rather than one per channel, so the graph
+takes the channels apart after the second matrix and puts them back
+together before the third. Its nine parameters expand at compile time into
+four matrices, a tone curve, two compressions, and three hue-indexed
+tables; only the arithmetic reaches the graph.
+
+That expansion is read off OCIO's renderer rather than off the published
+ACES 2.0 description, which differs from it exactly where a difference is
+expensive to notice: which clamp applies in which domain, where the
+absolute values sit, and — the one the oracle caught — which `std::max`
+swallows a NaN. OCIO's tone scale reaches `std::max(0.f, NaN)` for every
+pixel whose achromatic response is negative and answers black; ONNX `Max`
+propagates the NaN, so the comparison is emitted rather than the operator,
+and every `std::max` in the op keeps OCIO's argument order.
+
+Two of the three tables cost a search per hue to build — a bisection
+against the display gamut hull, a nested one for the hull's exponent, a
+third for the reach gamut — so they are read off OCIO's own shader
+description rather than rebuilt. Rebuilding them would put a search
+tolerance between this compiler and its oracle for no gain, which is the
+reasoning that makes OCIO the oracle at all. The hue table is derived,
+because OCIO publishes it only inside generated shader text, which is not
+an interface; it costs six bisections rather than seven hundred, and a
+test holds the derivation against what that text declares.
+
+*Rejected*: the inverse. It exists in OCIO and in no transform of the
+pinned config, and it is not the forward path run backwards — its gamut
+compression solves an approximation twice, the first pass only to estimate
+the lightness the second needs. An inverse request is refused by name.
+
+`Lut1D` is the exception among the rest, because most of them are
+half-domain: 37 of the 40 in the config hold 65536 entries indexed by the
+bit pattern of the input rounded to float16, not by a normalized
+coordinate. Standard ONNX has no bit-reinterpreting cast, so the index has
+to be arrived at some other way.
 
 **OCIO's own shaders are that other way.** OCIO has the same constraint —
 it targets GLSL 1.2 and ES 1.0, which have no bitwise integer ops — and
@@ -214,6 +248,13 @@ inverse therefore reaches the graph as an ordinary forward half-domain
 table, read by the gather and lerp that already exists, and direction
 costs no second code path and no run-time search. A table that does not
 rise has no inverse to read off and is refused by name.
+
+No `Lut1D` in the pinned config now arrives inverse: `OPTIMIZATION_LUT_INV_FAST`
+is set, which §spec:verification requires for a different reason, and it
+makes OCIO rewrite every invertible one into a forward half-domain table
+before the compiler sees it. The compile-time inversion below therefore
+serves op lists that reach the compiler still inverse, and the paragraphs
+that follow record why its grid is the one it is.
 
 **The inversion grid is the half domain because the oracle rejected a
 uniform one.** This section proposed a uniform-domain table and left the
@@ -262,15 +303,23 @@ explodes while the absolute error sits on the float32 noise floor. A
 purely absolute bound fails at the other end, where an input at 65504
 legitimately produces outputs around 1e8.
 
-**The oracle runs with fast math off.** OCIO's default CPU optimization
+**The compiler and the oracle read one op list.** OCIO reports a
+processor's ops as the config declares them and its renderer runs an
+optimized rewrite of that list. The two are the same transform and not the
+same arithmetic, so the compiler walks the rewrite: one optimization level,
+resolved once where a request binds to a processor, and read from there by
+the compiler, the census, and the lattice alike. Compiling one list and
+measuring against another leaves a residual that belongs to neither
+(§spec:op-coverage).
+
+**That level runs with fast math off.** OCIO's default CPU optimization
 includes `OPTIMIZATION_FAST_LOG_EXP_POW`, an approximate `pow`, `log`, and
 `exp` whose error exceeds this tolerance. Left on, it measures a math
 library rather than the compiler's reading of the config: 110 of the 111
 closed-form transforms verify against OCIO's fast path, and all 111 verify
-against its accurate one. Which optimization flags the oracle runs under
-is a correctness decision, not a tuning knob — the reference has to be
-OCIO's accurate arithmetic, or a compiler error and an oracle error are
-indistinguishable.
+against its accurate one. Which optimization flags are set is a correctness
+decision, not a tuning knob — the reference has to be OCIO's accurate
+arithmetic, or a compiler error and an oracle error are indistinguishable.
 
 **`OPTIMIZATION_LUT_INV_FAST` stays on**, which is the same decision read
 the other way. Cleared, OCIO's inverse `Lut1D` renderer parts company with
@@ -290,14 +339,14 @@ misreading; a lattice against the reference does.
 
 Coverage is asserted, not sampled: for every color space pair in the
 pinned config, the compiler either emits a verified graph or refuses with
-a named op.
+a named op. All 159 verify.
 
 ### What counts as evidence §spec:evidence-floor
 
 Some transforms overflow float32 somewhere in the lattice: 12 of the pinned
-config's 135 verified transforms do, at up to 36 of 1248 samples. A
-non-finite reference value carries no magnitude to measure a tolerance
-against, so agreement at those samples is asserted on the *kind* of value
+config's 159 verified transforms do, at up to 36 samples of a lattice of
+about 1250. A non-finite reference value carries no magnitude to measure a
+tolerance against, so agreement at those samples is asserted on the *kind* of value
 instead — `+inf`, `-inf`, and NaN are three distinct answers, and the graph
 shall return the one the reference returned. Every sample is therefore
 evidence: a sample is compared against the tolerance or matched against a

@@ -17,21 +17,14 @@ import onnxruntime as ort
 import PyOpenColorIO as OCIO
 
 from ocio2onnx import emitters
-from ocio2onnx.addressing import Resolved
+from ocio2onnx.addressing import OPTIMIZATION_FLAGS, Resolved
 from ocio2onnx.builder import CHANNELS, INPUT
 from ocio2onnx.compiler import compile_processor
 
-#: OCIO's default CPU optimization includes ``OPTIMIZATION_FAST_LOG_EXP_POW``,
-#: an approximate ``pow``/``log``/``exp``. Its error exceeds the verification
-#: tolerance, so leaving it on measures a math library rather than the
-#: compiler's reading of the config: across the pinned config 110 of the 111
-#: closed-form transforms verify against OCIO's fast path, and 111 of 111
-#: verify against its accurate one. The oracle must be the accurate reference,
-#: so the flag is cleared. This is a correctness decision, not a tuning knob;
-#: ``tests/test_oracle.py`` pins it.
-OPTIMIZATION_FLAGS = OCIO.OptimizationFlags(
-    OCIO.OPTIMIZATION_DEFAULT.value & ~OCIO.OPTIMIZATION_FAST_LOG_EXP_POW.value
-)
+#: Re-exported: the reference is OCIO's CPU processor at the same optimization
+#: level the compiler read its op list at, and reading them from one place is
+#: what makes that so (`addressing.OPTIMIZATION_FLAGS`).
+__all__ = ["OPTIMIZATION_FLAGS", "Comparison", "compare", "lattice", "verify"]
 
 #: A dense sweep across and beyond the unit interval.
 SWEEP = (-1.0, 2.0, 401)

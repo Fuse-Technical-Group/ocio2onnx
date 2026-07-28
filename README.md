@@ -25,13 +25,13 @@ changes what can execute it.
 
 OCIO reports a transform as a list of typed ops with readable parameters.
 Measured across the ACES Studio config — 159 transforms, every color space
-in both directions plus every display view — that list uses **eight op
-types, and needs no 3D LUT at all**. `FixedFunction` is counted as its two
+in both directions plus every display view — that list uses **nine op
+labels, and needs no 3D LUT at all**. `FixedFunction` is counted as its two
 styles, which are unrelated transforms sharing a class:
 
 | Op | Occurrences |
 | --- | --- |
-| `Matrix` | 284 |
+| `Matrix` | 186 |
 | `Range` | 52 |
 | `Lut1D` | 40 |
 | `Exponent` | 26 |
@@ -47,14 +47,14 @@ transforms partition:
 | Transform class | Count |
 | --- | --- |
 | closed-form ops only | 111 |
-| `Lut1D`, half-domain | 18 |
-| `Lut1D`, uniform | 6 |
-| refused (`ACES_OUTPUT_TRANSFORM_20`) | 24 |
+| `Lut1D`, half-domain | 37 |
+| `Lut1D`, uniform | 3 |
+| a fixed function, no table | 8 |
 
 **Six closed-form emitters reach 111 of the 159 transforms with no lookup
 table at all** — every camera log encoding, every ACES working space,
-sRGB and the gamma displays. `Lut1D` adds the remaining 24 and costs
-several times as much, because 34 of the 40 `Lut1D` ops are half-domain:
+sRGB and the gamma displays. `Lut1D` adds 40 more and costs
+several times as much, because 37 of the 40 `Lut1D` ops are half-domain:
 65536 entries indexed by the float16 *bit pattern* of the input, which
 standard ONNX has no cast to reach. OCIO hits the same wall on GLSL 1.2
 and reconstructs the index arithmetically; the compiler follows its
@@ -68,12 +68,12 @@ LogC4, CanonLog3, Apple Log and BMDFilm are all one parametric
 camera is a config update.
 
 An op the compiler does not emit is **refused by name at compile**, not
-approximated, and the name is the style rather than the class:
-`REC2100_SURROUND` is emitted, so HLG display output compiles, while
-`ACES_OUTPUT_TRANSFORM_20` is refused. 24 transforms refuse, and every one
-of them is an ACES 2.0 display rendering. Stating the boundary as an op set
-rather than as "view transforms are unsupported" is what keeps the split
-between two styles of one class from being a surprise.
+approximated, and the name is the style rather than the class — so
+`REC2100_SURROUND` and `ACES_OUTPUT_TRANSFORM_20` are two entries rather
+than one `FixedFunction`. Nothing in the pinned config is refused. The
+boundary is still an op set rather than a category, because that is what
+makes it predictable for a config you supply: the answer names the op that
+blocks you, not the kind of transform it belongs to.
 
 Reproduce the split for a config of your choice:
 
@@ -90,13 +90,14 @@ against OCIO's CPU processor before writing it:
 ocio2onnx compile --from "Log3G10 REDWideGamutRGB" --to ACES2065-1 -o graph.onnx --verify
 ocio2onnx compile --display "sRGB - Display" --view "Un-tone-mapped" -o srgb.onnx
 ocio2onnx compile --display "Rec.2100-HLG - Display" --view "Video (colorimetric)" -o hlg.onnx
+ocio2onnx compile --display "sRGB - Display" --view "ACES 2.0 - SDR 100 nits (Rec.709)" -o aces.onnx
 ```
 
 A transform carrying an op the compiler does not emit is refused, naming
 the op, the transform and its endpoints, and exits non-zero:
 
 ```text
-FixedFunction[ACES_OUTPUT_TRANSFORM_20] is not emitted by this compiler, so 'ACES2065-1 -> sRGB - Display / ACES 2.0 - SDR 100 nits (Rec.709)' is refused rather than approximated
+GradingPrimary is not emitted by this compiler, so 'ACES2065-1 -> a graded space' is refused rather than approximated
 ```
 
 The same two entry points from Python:
@@ -139,7 +140,7 @@ either verifies or refuses with a named op, and none are skipped.
 ocio2onnx verify [--config URI]
 ```
 
-Against the pinned ACES Studio config: **135 verified, 24 refused, 0
+Against the pinned ACES Studio config: **159 verified, 0 refused, 0
 failed, 0 skipped, 159 total**.
 
 ## Trusting a config
@@ -152,12 +153,12 @@ file's terms, not this compiler's. Point it at configs you would run
 
 ## Status
 
-The closed-form compiler and the sampled-lookup compiler both ship, with
-the oracle harness: every transform in the pinned config that carries a
-`Lut1D` compiles and verifies, in either direction. `REC2100_SURROUND`
-ships too, so an HLG display is reachable. `ACES_OUTPUT_TRANSFORM_20` is
-refused by name rather than approximated; it and live parameters are what
-is left in [ROADMAP.md](ROADMAP.md).
+Op coverage is complete for the pinned config: every one of its 159
+transforms compiles and verifies against OCIO's CPU processor — the
+closed-form ops, the sampled lookups, and both `FixedFunction` styles,
+including the ACES 2.0 display renderings. Live parameters, packaging, and
+the oracle's non-finite agreement are what is left in
+[ROADMAP.md](ROADMAP.md).
 
 ## License
 

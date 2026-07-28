@@ -1,10 +1,14 @@
 """The command line (§spec:op-coverage).
 
-The section's integration surface, and its acceptance test. The ROADMAP's
-Verify block asks for three things — a named pair compiles and agrees with the
-CPU processor, a display view carrying `ACES_OUTPUT_TRANSFORM_20` refuses
-naming the op, and the whole pinned config partitions with nothing skipped —
-and each is a test here.
+The section's integration surface, and its acceptance test: a named pair
+compiles and agrees with the CPU processor, and the whole pinned config
+partitions with nothing skipped and nothing refused.
+
+The refusal path is exercised against a config written here rather than
+against the pinned one, which no longer carries an op this compiler will not
+emit. That is the point of a separate exit code — a caller scripting this
+tells "that transform does not exist" from "this compiler will not emit it" —
+so it is held on the arbitrary config the boundary exists for.
 
 Driven through ``main`` rather than through a subprocess, so a failure lands
 as a traceback in the test rather than as an exit code and a blob of text. One
@@ -32,7 +36,9 @@ from ocio2onnx.cli import (
 #: The pair §spec:verification names.
 PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 
-#: The display view it names as its refusal, and the style that blocks it.
+#: The display view that used to be the section's refusal, and the style that
+#: blocked it. It is here for the opposite reason now: it is the heaviest
+#: transform the command emits.
 ACES_VIEW = ("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
 ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 
@@ -42,14 +48,13 @@ OPEN_VIEW = ("sRGB - Display", "Un-tone-mapped")
 #: An HLG display view, which reaches a display through `REC2100_SURROUND`.
 HLG_VIEW = ("Rec.2100-HLG - Display", "Video (colorimetric)")
 
-#: The partition ``verify`` reproduces: the 111 closed-form transforms
-#: §spec:op-coverage measured, plus the 24 carrying a ``Lut1D`` over either
-#: domain in either direction. What is left refuses on the one
-#: ``FixedFunction`` style still deferred. ``verify`` and the census reach that
-#: refusal count by different routes — one compiles, the other reads the op set
-#: — so their agreeing is a measured fact about this config, not an identity.
-VERIFIED = 135
-REFUSED = 24
+#: The partition ``verify`` reproduces: every one of the 159 transforms
+#: compiles and agrees with the CPU processor (§spec:op-coverage). ``verify``
+#: and the census reach the refusal count by different routes — one compiles,
+#: the other reads the op set — so their agreeing on zero is a measured fact
+#: about this config, not an identity.
+VERIFIED = 159
+REFUSED = 0
 TOTAL = 159
 
 
@@ -102,18 +107,18 @@ def test_compile_takes_a_config(graph):
     assert main([*argv, "--config", DEFAULT_CONFIG]) == OK
 
 
-def test_a_display_view_carrying_the_aces_output_transform_refuses(graph, capsys):
-    """The ROADMAP's second Verify item. A refusal is an answer, not a crash:
-    the message names the style, the transform, and its endpoints, and no
-    traceback reaches the caller."""
+def test_a_display_view_carrying_the_aces_output_transform_verifies(graph, capsys):
+    """The view this command used to refuse on `ACES_OUTPUT_TRANSFORM_20`. It
+    is the acceptance criterion read the other way round, and it is checked
+    with ``--verify`` because the op is the image's look: a graph that writes
+    but disagrees is the failure worth catching here."""
     display, view = ACES_VIEW
-    code = main(["compile", "--display", display, "--view", view, "-o", graph])
-    assert code == WILL_NOT_EMIT
+    argv = ["compile", "--display", display, "--view", view, "-o", graph, "--verify"]
+    assert main(argv) == OK
+    assert "0 of" in capsys.readouterr().out
 
-    err = capsys.readouterr().err
-    assert ACES_STYLE in err
-    assert f"{display} / {view}" in err
-    assert "Traceback" not in err
+    recorded = {entry.key: entry.value for entry in onnx.load(graph).metadata_props}
+    assert recorded[f"{METADATA_PREFIX}endpoints"].endswith(f"{display} / {view}")
 
 
 def test_an_unresolvable_name_exits_differently_from_a_refusal(graph, capsys):
@@ -142,6 +147,60 @@ def test_an_unloadable_config_is_refused_without_a_traceback(graph, capsys):
     )
     assert code == CANNOT_RESOLVE
     assert "Traceback" not in capsys.readouterr().err
+
+
+#: A config carrying an op no emitter is registered for. Written here rather
+#: than found: every op the pinned config carries now emits, and the exit code
+#: a refusal leaves by is what a caller scripting this reads.
+CONFIG_WITH_AN_UNEMITTABLE_OP = """ocio_profile_version: 2
+roles:
+  default: ref
+  reference: ref
+colorspaces:
+  - !<ColorSpace>
+    name: ref
+  - !<ColorSpace>
+    name: unemittable
+    from_scene_reference: !<FixedFunctionTransform> {style: ACES_RedMod03}
+"""
+
+#: The style that config carries, as a refusal spells it. ``FixedFunction``
+#: alone cannot say which behaviour of the class blocked the caller.
+UNEMITTABLE_STYLE = "FixedFunction[ACES_RED_MOD_03]"
+
+
+@pytest.fixture
+def config_with_an_unemittable_op(tmp_path):
+    path = tmp_path / "unemittable.ocio"
+    path.write_text(CONFIG_WITH_AN_UNEMITTABLE_OP)
+    return str(path)
+
+
+def test_an_unemittable_op_refuses_by_name_without_a_traceback(
+    config_with_an_unemittable_op, graph, capsys
+):
+    """A refusal is an answer, not a crash: the message names the style and the
+    endpoints, it leaves by its own exit code, and no traceback reaches the
+    caller."""
+    code = main(
+        [
+            "compile",
+            "--from",
+            "unemittable",
+            "--to",
+            "ref",
+            "-o",
+            graph,
+            "--config",
+            config_with_an_unemittable_op,
+        ]
+    )
+    assert code == WILL_NOT_EMIT
+
+    err = capsys.readouterr().err
+    assert UNEMITTABLE_STYLE in err
+    assert "unemittable -> ref" in err
+    assert "Traceback" not in err
 
 
 #: A config that parses but names a LUT that is not there. OCIO resolves a
@@ -231,8 +290,10 @@ def buckets(printed):
 
 
 def test_verify_partitions_the_whole_config_with_nothing_skipped(capsys):
-    """The ROADMAP's third Verify item. Every one of the 159 transforms lands
-    in exactly one bucket, and the identity is printed rather than assumed."""
+    """The section's acceptance test. Every one of the 159 transforms lands in
+    exactly one bucket, and the identity is printed rather than assumed —
+    ``skipped`` is what a transform quietly dropped from the sweep shows up
+    as, and it is the one failure the sweep cannot report any other way."""
     assert main(["verify"]) == OK
     printed = capsys.readouterr().out
 
@@ -243,9 +304,10 @@ def test_verify_partitions_the_whole_config_with_nothing_skipped(capsys):
         "skipped": 0,
         "total": TOTAL,
     }
-    assert VERIFIED + REFUSED == TOTAL
+    assert VERIFIED == TOTAL
 
-    assert f"24  {ACES_STYLE}" in printed
+    assert "refused, by op" not in printed
+    assert ACES_STYLE not in printed
     assert "REC2100_SURROUND" not in printed
     assert "Lut1D" not in printed
     assert "worst deviation" in printed

@@ -96,8 +96,8 @@ def test_every_config_transform_the_op_unblocks_verifies(carrying_the_op, check)
         result = check(processor, label)
         if not result.ok:
             failures.append(f"{label}: {result}")
-        elif result.nonfinite or result.compared < result.compared + result.nonfinite:
-            failures.append(f"{label}: {result.nonfinite} non-finite reference samples")
+        elif result.nonfinite:
+            failures.append(f"{label}: {result.nonfinite} samples went uncompared")
     assert not failures, "\n".join(failures)
 
 
@@ -144,6 +144,17 @@ def test_a_negative_pixel_maps_to_black_rather_than_to_a_nan(config, compile_bar
     got = run_graph(graph, pixel(-1.0, -1.0, -1.0)).ravel()
     assert np.isfinite(got).all()
     assert got == pytest.approx([0.0] * 3)
+
+
+def test_a_nan_pixel_leaves_as_nan_without_indexing_a_table(config, compile_bare):
+    """A NaN takes the achromatic arm, which OCIO's ``<= 0`` test does not, so
+    the hue it carries into the table lookup is zero rather than NaN — a NaN
+    ``Gather`` index is undefined. The pixel is unaffected: the tone scale
+    reads the achromatic response, so the NaN survives the substitution and
+    the graph agrees with OCIO on the kind of value it returns."""
+    graph = compile_bare(config.getProcessor(aces()))
+    got = run_graph(graph, pixel(np.nan, np.nan, np.nan)).ravel()
+    assert np.isnan(got).all()
 
 
 def test_the_declared_breakpoints_are_black_and_the_peak():
@@ -208,8 +219,13 @@ def test_the_hue_table_rises_across_every_entry(params):
     either end are what keep it true across 0 and 360."""
     hues = aces2.output_transform(aces(params)).hues
     assert (np.diff(hues) > 0.0).all()
-    assert hues[0] < 0.0 < hues[aces2.FIRST_NOMINAL]
-    assert hues[aces2.UPPER_WRAP] > aces2.HUE_LIMIT
+    assert hues[aces2.FIRST_NOMINAL] == 0.0
+
+    # The three wrap entries are the nominal ones displaced a full turn, which
+    # is what keeps the table increasing across 0 and 360 rather than folding.
+    assert hues[0] == hues[aces2.LAST_NOMINAL] - aces2.HUE_LIMIT
+    assert hues[aces2.UPPER_WRAP] == hues[aces2.FIRST_NOMINAL] + aces2.HUE_LIMIT
+    assert hues[aces2.UPPER_WRAP + 1] == hues[aces2.FIRST_NOMINAL + 1] + aces2.HUE_LIMIT
 
 
 @pytest.mark.parametrize("params", (REC709_SDR, P3_HDR))

@@ -39,10 +39,19 @@ ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 #: A closed-form display view.
 OPEN_VIEW = ("sRGB - Display", "Un-tone-mapped")
 
-#: The partition §spec:op-coverage measured, which ``verify`` must reproduce.
-VERIFIED = 111
-REFUSED = 48
+#: The partition ``verify`` reproduces today: the 111 closed-form transforms
+#: §spec:op-coverage measured, plus the 3 whose ``Lut1D`` is uniform and
+#: forward. The half-domain and inverse workstreams take this to 131.
+VERIFIED = 114
+REFUSED = 45
 TOTAL = 159
+
+#: How the two refusals the ``Lut1D`` emitter raises are counted. The census
+#: cannot see either: both are parameters of a registered op, so it refuses
+#: the ``FixedFunction`` transforms alone where ``verify`` refuses 45.
+HALF_DOMAIN_REFUSALS = "14  Lut1D over a half domain"
+INVERSE_REFUSALS = "3  an inverse Lut1D"
+CENSUS_REFUSED = 28
 
 
 @pytest.fixture
@@ -235,9 +244,10 @@ def test_verify_partitions_the_whole_config_with_nothing_skipped(capsys):
     }
     assert VERIFIED + REFUSED == TOTAL
 
-    assert "40  Lut1D" in printed
     assert f"24  {ACES_STYLE}" in printed
     assert "5  FixedFunction[REC2100_SURROUND]" in printed
+    assert HALF_DOMAIN_REFUSALS in printed
+    assert INVERSE_REFUSALS in printed
     assert "worst deviation" in printed
 
 
@@ -245,7 +255,7 @@ def test_census_is_reachable_from_the_cli(capsys):
     assert main(["census"]) == OK
     printed = capsys.readouterr().out
     assert f"transforms measured: {TOTAL}" in printed
-    assert f"refused: {REFUSED}/{TOTAL}" in printed
+    assert f"refused: {CENSUS_REFUSED}/{TOTAL}" in printed
 
 
 def test_an_unknown_subcommand_is_a_usage_error(capsys):

@@ -29,7 +29,11 @@ OP_CENSUS = {
     "Log": 4,
 }
 TOTAL_TRANSFORMS = 159
-REFUSED_TRANSFORMS = 48
+
+#: The census refuses by op type, so a transform whose ``Lut1D`` an emitter
+#: refuses for its domain or its direction is not counted here. That refusal
+#: is ``ocio2onnx verify``'s, which compiles (§spec:op-coverage).
+REFUSED_TRANSFORMS = 28
 NEEDS_LUT = 48
 
 #: The script SPEC.md §spec:op-coverage names by path.
@@ -55,8 +59,8 @@ def test_the_lut_partition_is_ocios_own(taken):
 
 def test_the_census_refuses_exactly_what_the_compiler_refuses(taken, config):
     """One supported set, not two. ``SUPPORTED`` used to live here and had
-    already drifted: it listed ``Lut1D``, which no emitter implements, so the
-    census reported 28 refusals where the compiler makes 48."""
+    already drifted: it listed ``Lut1D`` while no emitter implemented one, so
+    the census reported 28 refusals where the compiler made 48."""
     expected = [
         (label, unsupported_ops(processor))
         for label, processor in enumerate_transforms(config)
@@ -67,16 +71,19 @@ def test_the_census_refuses_exactly_what_the_compiler_refuses(taken, config):
 
 def test_the_census_marks_the_ops_the_compiler_emits(taken):
     assert taken.supported == supported_ops()
-    assert "Lut1D" not in taken.supported
+    assert "Lut1D" in taken.supported
+    assert "FixedFunction" not in taken.supported
 
 
 def test_refusals_group_by_op(taken):
     """A transform carrying two unimplemented ops counts under both, so these
     sum above the number of refused transforms."""
     grouped = dict(census.group_by_op(taken.refusals))
-    assert grouped["Lut1D"] == 40
-    assert grouped["FixedFunction[ACES_OUTPUT_TRANSFORM_20]"] == 24
-    assert grouped["FixedFunction[REC2100_SURROUND]"] == 5
+    assert grouped == {
+        "FixedFunction[ACES_OUTPUT_TRANSFORM_20]": 24,
+        "FixedFunction[REC2100_SURROUND]": 5,
+    }
+    assert sum(grouped.values()) > REFUSED_TRANSFORMS
 
 
 def test_the_report_prints_the_partition(capsys):

@@ -41,6 +41,19 @@ MIRROR = "MIRROR"
 PASS_THRU = "PASS_THRU"
 LINEAR = "LINEAR"
 
+#: A uniform ``Lut1D`` spans this and clamps outside it. OCIO exposes no
+#: domain accessor for one because there is nothing to expose: the domain is
+#: the unit interval, and the index is a position in it.
+LUT1D_DOMAIN = (0.0, 1.0)
+
+#: The interpolations OCIO renders a 1D LUT linearly. ``DEFAULT`` is not a
+#: convenience synonym: every 1D LUT OCIO loads from a file reports it, and
+#: OCIO resolves it to linear, so refusing it would refuse them all.
+LUT1D_INTERPOLATIONS = ("LINEAR", "DEFAULT")
+
+#: The only hue adjustment this compiler emits, which is none.
+HUE_NONE = "NONE"
+
 
 class UnsupportedOpError(NotImplementedError):
     """An op, or a parameter of one, the compiler does not emit.
@@ -578,3 +591,132 @@ def emit_log_camera(builder: GraphBuilder, transform: Any, x: str) -> str:
         linear = builder.add(builder.mul(x, linear_slope), linear_offset)
 
     return builder.where(builder.op("Less", [x, breaks]), linear, curved)
+
+
+def lut1d_table(transform: Any) -> np.ndarray:
+    """One ``Lut1D``'s entries, as ``(length, 3)`` float32.
+
+    OCIO reports a triple per entry even where the three curves coincide,
+    which they do for all 40 ops in the pinned config. The emitter reads them
+    and compares rather than assuming it: a per-channel table is a shape
+    another config can take (§spec:non-goals).
+    """
+    return np.array(
+        [transform.getValue(i) for i in range(transform.getLength())],
+        dtype=np.float32,
+    )
+
+
+def _refuse_unemitted_lut1d(transform: Any) -> None:
+    """Refuse the ``Lut1D`` shapes this compiler has no path for.
+
+    Each would change the result rather than degrade it. A half domain indexes
+    by the bit pattern of the input rounded to float16 rather than by a
+    coordinate, and an inverse op runs the table backwards; both are their own
+    workstreams (§spec:op-emission). The remaining three redefine what a slot
+    means, and none occurs in the pinned config — so, following
+    ``_negative_style``, an unrecognised one is refused rather than
+    approximated by the reading this emitter does implement.
+    """
+    if transform.getInputHalfDomain():
+        raise UnsupportedOpError(
+            "Lut1D over a half domain is not emitted by this compiler; it "
+            "emits a uniform domain"
+        )
+    if _is_inverse(transform):
+        raise UnsupportedOpError(
+            "an inverse Lut1D is not emitted by this compiler; it emits the "
+            "forward direction"
+        )
+    interpolation = _enum_member(transform.getInterpolation(), "INTERP_")
+    if interpolation not in LUT1D_INTERPOLATIONS:
+        raise UnsupportedOpError(
+            f"Lut1D interpolation {interpolation} is not emitted by this "
+            f"compiler; it emits {', '.join(LUT1D_INTERPOLATIONS)}"
+        )
+    hue_adjust = _enum_member(transform.getHueAdjust(), "HUE_")
+    if hue_adjust != HUE_NONE:
+        raise UnsupportedOpError(
+            f"Lut1D hue adjust {hue_adjust} is not emitted by this compiler; "
+            "it emits an unadjusted table"
+        )
+    if transform.getOutputRawHalfs():
+        raise UnsupportedOpError(
+            "Lut1D with raw half-float entries is not emitted by this "
+            "compiler; it emits the float32 entries OCIO reports"
+        )
+
+
+def lut1d_breakpoints(transform: Any) -> list[float]:
+    """The domain edges, where the clamp engages.
+
+    Not the slot boundaries between them: there are thousands, they would
+    swamp the lattice, and the lerp is continuous across every one. A
+    breakpoint is declared where a misreading would put a sample on the wrong
+    branch, and a slot boundary has no branch.
+    """
+    return list(LUT1D_DOMAIN)
+
+
+@register("Lut1DTransform", breakpoints=lut1d_breakpoints)
+def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """A gather and a lerp over a uniform table (§spec:op-emission).
+
+    The index is OCIO's: ``clip(x, 0, 1) * (length - 1)``, floored to a slot
+    and interpolated across it. OCIO's CPU processor interpolates rather than
+    snapping to the nearer slot, so the lerp is the op rather than a
+    refinement of it.
+
+    The upper index is ``i0 + (1 if frac > 0 else 0)`` rather than
+    ``min(i0 + 1, length - 1)``. At ``x >= 1`` the index is the last slot and
+    ``i0 + 1`` would read past the end. The half-domain workstream needs the
+    same form for a second reason — a top slot there can hold ``inf``, and
+    ``0 * inf`` is NaN — so one rule serves both.
+
+    ``Gather`` over a rank-1 table with rank-4 indices returns the indices'
+    shape, so the whole op runs at ``(N, 3, H, W)`` with no reshaping. Three
+    coinciding channels share one table; three that disagree flatten into one
+    channel-major table read through a per-channel base offset, so both paths
+    are the same gather.
+    """
+    _refuse_unemitted_lut1d(transform)
+    table = lut1d_table(transform)
+    length = table.shape[0]
+
+    index = builder.mul(
+        builder.op(
+            "Clip",
+            [
+                x,
+                builder.scalar("lut1d_low", LUT1D_DOMAIN[0]),
+                builder.scalar("lut1d_high", LUT1D_DOMAIN[1]),
+            ],
+        ),
+        builder.scalar("lut1d_scale", float(length - 1)),
+    )
+    floor = builder.op("Floor", [index])
+    frac = builder.sub(index, floor)
+
+    lower = builder.to_int64(floor)
+    upper = builder.add(
+        lower,
+        builder.to_int64(builder.op("Greater", [frac, builder.scalar("zero", 0.0)])),
+    )
+
+    if (table == table[:, :1]).all():
+        data = builder.constant("lut1d_table", table[:, 0])
+    else:
+        # Channel-major, so channel ``c`` occupies ``[c * length, ...)`` and a
+        # constant offset per channel turns a shared index into its own.
+        data = builder.constant("lut1d_table", table.T.reshape(-1))
+        base = builder.per_channel(
+            "lut1d_channel_base",
+            [channel * length for channel in range(CHANNELS)],
+            dtype=np.int64,
+        )
+        lower = builder.add(lower, base)
+        upper = builder.add(upper, base)
+
+    low = builder.op("Gather", [data, lower], axis=0)
+    high = builder.op("Gather", [data, upper], axis=0)
+    return builder.add(low, builder.mul(frac, builder.sub(high, low)))

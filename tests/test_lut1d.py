@@ -697,8 +697,9 @@ def test_a_nan_input_reads_the_first_slot_rather_than_an_index_no_bound_covers(
     ``inf - inf``. So this is asserted here rather than left to the lattice,
     which is finite throughout and cannot reach it.
 
-    The first slot is where OCIO reads a NaN — measured on the PQ, ACEScc and
-    ADX10 tables, each answering its own ``table[0]``.
+    The first slot is where OCIO reads a NaN over a uniform table. Over a half
+    domain OCIO reads the NaN's own float16 pattern, slot 32256, which holds
+    the same value as slot 0 in every half-domain table in the pinned config.
     """
     for src, dst in (
         (UNIFORM_SPACES[0], REFERENCE),

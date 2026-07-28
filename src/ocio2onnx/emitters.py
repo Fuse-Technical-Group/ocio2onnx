@@ -947,14 +947,21 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
     (``lut1d_inverse_table``). Direction costs no second code path in the
     graph and no search at run time.
 
-    A NaN input is read as the first slot, which is where OCIO reads it —
-    measured on the PQ, ACEScc, and ADX10 tables, each of which answers its
-    own ``table[0]``. It has to be handled rather than left to the arithmetic:
-    ``Cast(NaN, INT64)`` is implementation-defined, yields ``INT64_MIN`` on
-    x86, and would reach ``Gather`` as an index no bound covers. NaN is not
-    exotic in the pixels this graph runs on, and it arrives from inside the
-    graph too — an upstream ``Matrix`` overflowing to ``±inf`` yields
-    ``inf - inf``.
+    A NaN input reads the first slot. It has to be handled rather than left to
+    the arithmetic: ``Cast(NaN, INT64)`` is implementation-defined, yields
+    ``INT64_MIN`` on x86, and would reach ``Gather`` as an index no bound
+    covers. NaN is not exotic in the pixels this graph runs on, and it arrives
+    from inside the graph too — an upstream ``Matrix`` overflowing to ``±inf``
+    yields ``inf - inf``.
+
+    The first slot is where OCIO reads a NaN over a uniform table. Over a half
+    domain OCIO reads the NaN's own float16 pattern, slot 32256 — a different
+    rule that lands on the same value, because every half-domain table in the
+    pinned config holds ``table[32256] == table[0]``. Measured across all 14
+    distinct tables in that config, against four NaN payloads and both
+    infinities, the two readings agree everywhere. A config whose half-domain
+    table disagreed at that slot would need the pattern read rather than the
+    slot assumed.
     """
     _refuse_unemitted_lut1d(transform)
     inverse = _is_inverse(transform)

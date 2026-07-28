@@ -45,14 +45,12 @@ HLG_VIEW = ("Rec.2100-HLG - Display", "Video (colorimetric)")
 #: The partition ``verify`` reproduces: the 111 closed-form transforms
 #: §spec:op-coverage measured, plus the 24 carrying a ``Lut1D`` over either
 #: domain in either direction. What is left refuses on the one
-#: ``FixedFunction`` style still deferred.
+#: ``FixedFunction`` style still deferred. ``verify`` and the census reach that
+#: refusal count by different routes — one compiles, the other reads the op set
+#: — so their agreeing is a measured fact about this config, not an identity.
 VERIFIED = 135
 REFUSED = 24
 TOTAL = 159
-
-#: ``verify`` and the census reach the same refusal count by different routes
-#: — one compiles, the other reads the op set — so their agreeing is a measured
-#: fact about this config rather than an identity.
 
 
 @pytest.fixture
@@ -90,21 +88,11 @@ def test_compile_verify_holds_the_graph_against_the_cpu_processor(graph, capsys)
     assert "outside tolerance" in printed
 
 
-def test_compile_takes_a_display_view(graph):
-    display, view = OPEN_VIEW
+@pytest.mark.parametrize(("display", "view"), (OPEN_VIEW, HLG_VIEW))
+def test_compile_takes_a_display_view(display, view, graph):
+    """The HLG view is here because a consumer asking for HLG output used to
+    meet a refusal naming `REC2100_SURROUND` (§spec:op-coverage)."""
     assert main(["compile", "--display", display, "--view", view, "-o", graph]) == OK
-    recorded = {entry.key: entry.value for entry in onnx.load(graph).metadata_props}
-    assert recorded[f"{METADATA_PREFIX}endpoints"].endswith(f"{display} / {view}")
-
-
-def test_an_hlg_display_view_compiles_and_agrees_with_the_cpu_processor(graph, capsys):
-    """`REC2100_SURROUND`'s surface (§spec:op-coverage): a consumer asking for
-    HLG output used to meet a refusal naming the cheap op rather than the
-    expensive one."""
-    display, view = HLG_VIEW
-    argv = ["compile", "--display", display, "--view", view, "-o", graph, "--verify"]
-    assert main(argv) == OK
-    assert "0 of" in capsys.readouterr().out
     recorded = {entry.key: entry.value for entry in onnx.load(graph).metadata_props}
     assert recorded[f"{METADATA_PREFIX}endpoints"].endswith(f"{display} / {view}")
 

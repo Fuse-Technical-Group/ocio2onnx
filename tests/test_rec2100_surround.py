@@ -7,9 +7,7 @@ else. The tests below hold a coloured pixel rather than a grey one for that
 reason.
 
 It is also the first op whose emitter is chosen by a style rather than by a
-class. ``FixedFunction`` carries two unrelated transforms (§spec:op-coverage);
-this workstream emits one of them and the other has to go on refusing, so the
-registry keys on the style.
+class, which is what ``emitters.DISTINGUISHING`` exists for.
 """
 
 import numpy as np
@@ -19,7 +17,12 @@ import pytest
 from ocio2onnx import emitters
 from ocio2onnx.addressing import enumerate_transforms
 from ocio2onnx.compiler import unsupported_ops
-from ocio2onnx.emitters import op_label, supported_ops
+from ocio2onnx.emitters import (
+    REC2100_LUMA,
+    REC2100_MIN_LUM,
+    op_label,
+    supported_ops,
+)
 from ocio2onnx.oracle import lattice, run_graph
 
 #: The two styles that share the ``FixedFunction`` class, as a refusal and the
@@ -41,13 +44,6 @@ UNBLOCKED = (
 
 #: The fifth, which goes on refusing because it carries the other style too.
 STILL_REFUSED = f"view {HLG_DISPLAY}/ACES 2.0 - HDR 1000 nits (P3 D65)"
-
-#: Rec.2020's luminance weights, which the op reads Y through. They sum to one,
-#: so a grey pixel is raised to the gamma and nothing else.
-LUMA = (0.2627, 0.6780, 0.0593)
-
-#: The luminance OCIO's own renderer floors the forward op at.
-MIN_LUM = 1e-4
 
 #: A gamma either side of one, so no test passes on the identity. The pinned
 #: config carries 1/1.2.
@@ -75,7 +71,9 @@ def pixel(*channels):
 
 def luminance(*channels):
     """What the op reads Y as, before the fold and the floor."""
-    return sum(weight * value for weight, value in zip(LUMA, channels, strict=True))
+    return sum(
+        weight * value for weight, value in zip(REC2100_LUMA, channels, strict=True)
+    )
 
 
 @pytest.fixture
@@ -101,8 +99,8 @@ def carrying_the_surround(config):
 
 
 def test_the_registry_keys_on_the_style_rather_than_the_class():
-    """The class alone cannot be registered: it would claim the other style
-    too, and a refusal is what §road:aces-output-transform is deferred behind."""
+    """Registering the class would claim the other style too, and that style's
+    refusal is what §road:aces-output-transform is deferred behind."""
     assert SURROUND in emitters.REGISTRY
     assert "FixedFunctionTransform" not in emitters.REGISTRY
     assert SURROUND in supported_ops()
@@ -145,15 +143,12 @@ def test_a_bare_surround_verifies(inverse, check_transform):
 
 def test_the_scale_is_one_luminance_rather_than_three_gammas(apply):
     """A per-channel gamma agrees on grey and disagrees on everything else, so
-    the check is that the three channels take the *same* factor — and that the
-    factor is Rec.2020's luminance raised to ``gamma - 1``."""
-    got = apply(surround(), *COLOURED)
+    the pixel is coloured and the expected factor is a single scalar: the
+    pixel's luminance raised to ``gamma - 1``."""
     scale = luminance(*COLOURED) ** (GAMMA - 1.0)
-    assert got == pytest.approx([value * scale for value in COLOURED], rel=1e-5)
-
-    ratios = [out / value for out, value in zip(got, COLOURED, strict=True)]
-    assert ratios[0] == pytest.approx(ratios[1], rel=1e-5)
-    assert ratios[1] == pytest.approx(ratios[2], rel=1e-5)
+    assert apply(surround(), *COLOURED) == pytest.approx(
+        [value * scale for value in COLOURED], rel=1e-5
+    )
 
 
 def test_a_grey_pixel_is_raised_to_the_gamma(apply):
@@ -164,8 +159,8 @@ def test_a_grey_pixel_is_raised_to_the_gamma(apply):
 def test_luminance_below_the_floor_is_held_at_it(apply):
     """Unfloored, the scale runs away as the pixel approaches black."""
     channels = (1e-9, 2e-9, 3e-9)
-    assert luminance(*channels) < MIN_LUM
-    scale = MIN_LUM ** (GAMMA - 1.0)
+    assert luminance(*channels) < REC2100_MIN_LUM
+    scale = REC2100_MIN_LUM ** (GAMMA - 1.0)
     assert apply(surround(), *channels) == pytest.approx(
         [value * scale for value in channels], rel=1e-5
     )
@@ -179,7 +174,7 @@ def test_negative_luminance_folds_through_its_magnitude(apply):
     assert apply(surround(), *channels) == pytest.approx(
         [value * scale for value in channels], rel=1e-5
     )
-    assert scale != pytest.approx(MIN_LUM ** (GAMMA - 1.0), rel=1e-3)
+    assert scale != pytest.approx(REC2100_MIN_LUM ** (GAMMA - 1.0), rel=1e-3)
 
 
 def test_the_inverse_reciprocates_the_gamma(apply):
@@ -192,7 +187,7 @@ def test_the_inverse_reciprocates_the_gamma(apply):
 def test_the_inverse_floors_at_the_forward_floors_image(apply):
     """The inverse's clamp lives in the forward's output domain, so its floor
     is ``1e-4 ** gamma`` rather than ``1e-4``."""
-    floor = MIN_LUM**GAMMA
+    floor = REC2100_MIN_LUM**GAMMA
     channels = (floor / 10.0,) * 3
     scale = floor ** (1.0 / GAMMA - 1.0)
     assert apply(surround(inverse=True), *channels) == pytest.approx(
@@ -204,7 +199,7 @@ def test_the_inverse_floors_at_the_forward_floors_image(apply):
 def test_the_declared_breakpoints_are_zero_and_the_floor(inverse):
     """Where the fold and the clamp switch, stated on the diagonal: the three
     weights sum to one, so a grey pixel's luminance is its own value."""
-    floor = MIN_LUM**GAMMA if inverse else MIN_LUM
+    floor = REC2100_MIN_LUM**GAMMA if inverse else REC2100_MIN_LUM
     assert emitters.breakpoints(surround(inverse=inverse)) == pytest.approx(
         [0.0, floor, -floor]
     )

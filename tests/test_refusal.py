@@ -48,17 +48,27 @@ def resolve(config):
 
 
 @pytest.fixture
-def crowded(config):
+def bare(config):
+    """Resolve a transform a test built rather than a config supplied."""
+
+    def bare(transform, endpoints="bare"):
+        return Resolved(
+            processor=config.getProcessor(transform),
+            config_name=config.getName(),
+            config_uri=DEFAULT_CONFIG,
+            endpoints=endpoints,
+        )
+
+    return bare
+
+
+@pytest.fixture
+def crowded(bare):
     """A transform carrying two ops the compiler has no emitter for."""
     group = OCIO.GroupTransform()
     group.appendTransform(OCIO.GradingPrimaryTransform())
     group.appendTransform(OCIO.GradingToneTransform())
-    return Resolved(
-        processor=config.getProcessor(group),
-        config_name=config.getName(),
-        config_uri=DEFAULT_CONFIG,
-        endpoints="crowded",
-    )
+    return bare(group, "crowded")
 
 
 def test_a_transform_the_compiler_emits_refuses_nothing(config):
@@ -106,18 +116,13 @@ def test_the_refusal_names_the_fixed_function_style(resolve):
     assert unsupported_ops(resolve(*ACES_VIEW).processor) == [ACES_STYLE]
 
 
-def test_a_refusal_an_op_list_cannot_see_is_raised_at_emission(config):
+def test_a_refusal_an_op_list_cannot_see_is_raised_at_emission(bare):
     """``Lut1D`` is registered, so the op list passes this transform; the
     emitter refuses a parameter of it on reading the op. A caller meets one
     refusal, whichever layer raised it."""
     lut = OCIO.Lut1DTransform(length=2)
     lut.setHueAdjust(LUT_HUE_ADJUST)
-    resolved = Resolved(
-        processor=config.getProcessor(lut),
-        config_name=config.getName(),
-        config_uri=DEFAULT_CONFIG,
-        endpoints="bare",
-    )
+    resolved = bare(lut)
     assert unsupported_ops(resolved.processor) == []
     with pytest.raises(UnsupportedOpError, match="hue adjust"):
         compile_processor(resolved)
@@ -166,17 +171,12 @@ def test_an_empty_op_list_is_a_graph_rather_than_a_refusal(config):
     assert compile_processor(resolved) is not None
 
 
-def test_a_parameter_refusal_is_the_same_exception_type(config):
+def test_a_parameter_refusal_is_the_same_exception_type(bare):
     """An emitter refuses a parameter it has no path for. A caller catching a
     refusal should not have to care which layer raised it."""
     transform = OCIO.ExponentTransform()
     transform.setNegativeStyle(OCIO.NEGATIVE_CLAMP)
-    resolved = Resolved(
-        processor=config.getProcessor(transform),
-        config_name=config.getName(),
-        config_uri=DEFAULT_CONFIG,
-        endpoints="bare",
-    )
+    resolved = bare(transform)
     assert unsupported_ops(resolved.processor) == []
     with pytest.raises(UnsupportedOpError, match="negative style CLAMP"):
         compile_processor(resolved)

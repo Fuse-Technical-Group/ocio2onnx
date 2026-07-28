@@ -22,13 +22,11 @@ __all__ = ["UnsupportedOpError", "compile_processor", "op_names", "unsupported_o
 
 
 def op_names(processor) -> list[str]:
-    """The ops a processor is built from, in order, as this compiler names them.
+    """The ops a processor is built from, in order, as ``op_label`` names them.
 
-    ``op_label``'s naming rather than the bare class name, so an op type
-    carrying two unrelated transforms is counted as the two it is. The census
-    marks a name emitted or refused against the same set the compiler selects
-    an emitter from, and a type half of which is emitted cannot be marked
-    either way (§spec:op-coverage).
+    That naming rather than the bare class name, so the census can mark every
+    name it counts emitted or refused against the set the compiler selects an
+    emitter from (§spec:op-coverage).
     """
     return [emitters.op_label(t) for t in processor.createGroupTransform()]
 

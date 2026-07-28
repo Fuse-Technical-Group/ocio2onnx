@@ -18,9 +18,7 @@ from ocio2onnx.compiler import unsupported_ops
 from ocio2onnx.emitters import supported_ops
 
 #: Measured across the pinned config (§spec:op-coverage). ``FixedFunction``
-#: appears as its two styles rather than as one type: they are separate
-#: workstreams, one emitted and one not, so a single row could be marked
-#: neither emitted nor refused.
+#: appears as its two styles, which is what ``op_label`` names.
 OP_CENSUS = {
     "Matrix": 284,
     "Range": 52,
@@ -74,9 +72,8 @@ def test_the_census_refuses_exactly_what_the_compiler_refuses(taken, config):
 
 
 def test_the_census_marks_the_ops_the_compiler_emits(taken):
-    """Every name the census counts is marked emitted or refused against the
-    set the compiler selects an emitter from, so the two halves of
-    ``FixedFunction`` are marked separately and correctly."""
+    """Every name the census counts is marked against the set the compiler
+    selects an emitter from, so no counted name is left unmarkable."""
     assert taken.supported == supported_ops()
     assert "Lut1D" in taken.supported
     assert "FixedFunction[REC2100_SURROUND]" in taken.supported

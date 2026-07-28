@@ -144,9 +144,9 @@ analytically at all. What separated them was scope and risk, by an order of
 magnitude in both:
 
 - `REC2100_SURROUND` (5 transforms) is a surround/system-gamma adjustment
-  scaling all three channels by a power of their luminance. Small, and it
-  was the only thing standing between this compiler and HLG display
-  output — so it went first, and it ships.
+  scaling all three channels by a power of their luminance. Small, and the
+  only thing that stood between this compiler and HLG display output, so
+  it went first. It ships.
 - `ACES_OUTPUT_TRANSFORM_20` (24 transforms) is the ACES 2.0 output
   transform: tone scale, chroma compression, and gamut mapping. Published
   with a reference implementation, and substantial. It is also *the look*
@@ -155,15 +155,12 @@ magnitude in both:
   one. Deferred behind a named trigger (§road:aces-output-transform).
 
 **Refusal is by op, not by category.** 135 of the 159 transforms compile;
-24 refuse, and every one of them is an ACES 2.0 display rendering, where a
-caller expects it. `Rec.2100-HLG - Display` used to refuse alongside them,
-because HLG's surround adjustment is `REC2100_SURROUND` rather than a
-transfer curve — a boundary a consumer could not have predicted from the
-words "display view". Stating it as an op set is what made that case
-legible while it lasted, and it is what keeps the ACES one legible now.
-`ocio2onnx census` reports the split for any config, against the op set the
-compiler actually implements rather than a second list beside it;
-`tools/census.py` is a shim over the same code.
+24 refuse, and every one is an ACES 2.0 display rendering. Stating the
+boundary as an op set rather than as "view transforms are unsupported" is
+what makes it predictable: a caller reads which op blocks them, and every
+other view compiles. `ocio2onnx census` reports the split for any config,
+against the op set the compiler actually implements rather than a second
+list beside it; `tools/census.py` is a shim over the same code.
 
 ## How ops emit §spec:op-emission
 *Status: in progress*

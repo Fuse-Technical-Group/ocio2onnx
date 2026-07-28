@@ -2,10 +2,8 @@
 
 Every coefficient is read off OCIO's transform introspection; this module
 holds no opinion the config does not already state (§spec:non-goals). The
-registry keys on ``op_label`` — an op's type, plus whatever distinguishes one
-behaviour of that type from another — so adding an op is adding an entry
-rather than editing the compiler, and a type carrying two unrelated transforms
-can have one emitted while the other refuses.
+registry keys on ``op_label``, so adding an op is adding an entry rather than
+editing the compiler.
 
 Each entry also declares its **breakpoints**: the input values at which the
 op switches branches. The oracle's lattice asks every op in a processor for
@@ -24,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from ocio2onnx.builder import CHANNELS, GraphBuilder
+from ocio2onnx.builder import CHANNEL_AXIS, CHANNELS, GraphBuilder
 
 #: A ``Range`` bound OCIO leaves unset arrives as NaN, and ``Clip`` needs a
 #: number. This stands in for "no bound": float16's finite limit is 65504, so
@@ -118,9 +116,6 @@ REC2100_LUMA = (0.2627, 0.6780, 0.0593)
 #: chosen, as ``LOG_FLOOR`` is.
 REC2100_MIN_LUM = 1e-4
 
-#: Where ``ReduceSum`` collapses the channel axis of ``(N, 3, H, W)``.
-CHANNEL_AXIS = 1
-
 
 class UnsupportedOpError(NotImplementedError):
     """An op, or a parameter of one, the compiler does not emit.
@@ -170,7 +165,7 @@ def op_name(transform: Any) -> str:
 #: therefore too coarse to key an emitter on, let alone to refuse by: one style
 #: emits while the other does not.
 DISTINGUISHING: dict[str, Callable[[Any], str]] = {
-    "FixedFunctionTransform": lambda transform: _enum_member(
+    "FixedFunction": lambda transform: _enum_member(
         transform.getStyle(), "FIXED_FUNCTION_"
     ),
 }
@@ -179,13 +174,11 @@ DISTINGUISHING: dict[str, Callable[[Any], str]] = {
 def op_label(transform: Any) -> str:
     """How this compiler names one op, everywhere it names one.
 
-    An op type with a distinguishing attribute names it; one without names the
-    type alone. One naming for the registry, the census, and a refusal, so what
-    a consumer is told is refused is the same string that would have selected
-    an emitter had one been registered.
+    An op type with a ``DISTINGUISHING`` attribute names it; one without names
+    the type alone.
     """
     op = op_name(transform)
-    attribute = DISTINGUISHING.get(type(transform).__name__)
+    attribute = DISTINGUISHING.get(op)
     return f"{op}[{attribute(transform)}]" if attribute is not None else op
 
 
@@ -1038,7 +1031,7 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
     return builder.add(low, builder.mul(frac, builder.sub(high, low)))
 
 
-def rec2100_surround(transform: Any) -> tuple[float, float]:
+def surround_curve(transform: Any) -> tuple[float, float]:
     """One surround op's exponent and its luminance floor, direction applied.
 
     The op scales every channel by ``Y ** (gamma - 1)``. Luminance is linear in
@@ -1066,7 +1059,7 @@ def rec2100_surround_breakpoints(transform: Any) -> list[float]:
     luminance is its own value and straddling these three puts samples either
     side of the clamp.
     """
-    _, floor = rec2100_surround(transform)
+    _, floor = surround_curve(transform)
     return [0.0, floor, -floor]
 
 
@@ -1080,10 +1073,11 @@ def emit_rec2100_surround(builder: GraphBuilder, transform: Any, x: str) -> str:
 
     The fold and the floor are both OCIO's, and neither is decoration. ``|Y|``
     keeps a negative pixel's scale tied to its own magnitude rather than
-    collapsing it onto the floor; the floor keeps the ``Pow`` base positive,
-    and ONNX ``Pow`` at a non-positive base with a fractional exponent is NaN.
+    collapsing it onto the floor; the floor keeps the ``Pow`` base positive, as
+    ``emit_log``'s does, and ONNX ``Pow`` at a non-positive base with a
+    fractional exponent is NaN.
     """
-    exponent, floor = rec2100_surround(transform)
+    exponent, floor = surround_curve(transform)
     weighted = builder.mul(x, builder.per_channel("rec2100_luma", REC2100_LUMA))
     luminance = builder.op(
         "ReduceSum",
@@ -1091,7 +1085,7 @@ def emit_rec2100_surround(builder: GraphBuilder, transform: Any, x: str) -> str:
         keepdims=1,
     )
     floored = builder.op(
-        "Max",
+        "Clip",
         [builder.op("Abs", [luminance]), builder.scalar("rec2100_min_lum", floor)],
     )
     return builder.mul(

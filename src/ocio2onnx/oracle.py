@@ -87,6 +87,21 @@ class Worst:
 
 
 @dataclasses.dataclass(frozen=True)
+class Inverted:
+    """A sample where the graph answered a different kind of value.
+
+    There is no deviation to report — the point is which of the four answers
+    each side gave, and at which input.
+    """
+
+    channel: int
+    index: int
+    value: float
+    want: float
+    got: float
+
+
+@dataclasses.dataclass(frozen=True)
 class Comparison:
     """What the oracle found, in enough detail to act on without a debugger.
 
@@ -95,6 +110,9 @@ class Comparison:
     the same class of non-finite value, and ``disagreed`` where the classes
     differ. Their sum is the lattice, so a report states what was established
     rather than what survived a filter.
+
+    Each of the two ways to fail names a sample: ``worst`` the widest miss of
+    the tolerance, ``inverted`` the first class disagreement.
     """
 
     compared: int
@@ -104,6 +122,7 @@ class Comparison:
     max_abs: float
     max_rel: float
     worst: Worst | None
+    inverted: Inverted | None = None
 
     @property
     def ok(self) -> bool:
@@ -126,6 +145,12 @@ class Comparison:
                 f"{self.disagreed} samples disagreed on class "
                 "(finite, +inf, -inf, and NaN are four distinct answers)"
             )
+        if self.inverted is not None:
+            i = self.inverted
+            parts.append(
+                f"first at channel {i.channel} index {i.index}, "
+                f"input {i.value:.9g}: want {i.want:.9g}, got {i.got:.9g}"
+            )
         if self.worst is not None:
             w = self.worst
             parts.append(
@@ -140,6 +165,15 @@ class Comparison:
 #: measure a tolerance against, so agreement there is agreement on the class
 #: (§spec:evidence-floor).
 FINITE, POSITIVE_INFINITY, NEGATIVE_INFINITY, NOT_A_NUMBER = range(4)
+
+
+def channel_of(index: int, shape: tuple[int, ...]) -> int:
+    """Which channel a flat index falls in.
+
+    Zero where the arrays carry no channel axis, which is a caller comparing
+    bare vectors rather than a lattice.
+    """
+    return int(np.unravel_index(index, shape)[1]) if len(shape) > 1 else 0
 
 
 def classify(values: np.ndarray) -> np.ndarray:
@@ -246,28 +280,43 @@ def compare(
     bound = TOLERANCE.bound(w)
     over = deviation > bound
 
+    def input_at(index):
+        return float(samples.ravel()[index]) if samples is not None else np.nan
+
     worst = None
     if over.any():
         k = int(np.argmax(deviation / bound))
-        coords = np.unravel_index(usable[k], want.shape)
         worst = Worst(
-            channel=int(coords[1]),
+            channel=channel_of(usable[k], want.shape),
             index=int(usable[k]),
-            value=float(samples.ravel()[usable[k]]) if samples is not None else np.nan,
+            value=input_at(usable[k]),
             want=float(w[k]),
             got=float(g[k]),
             absolute=float(deviation[k]),
             relative=float(relative[k]),
         )
 
+    inverted = None
+    disagreeing = np.flatnonzero(~agree)
+    if disagreeing.size:
+        first = int(disagreeing[0])
+        inverted = Inverted(
+            channel=channel_of(first, want.shape),
+            index=first,
+            value=input_at(first),
+            want=float(want.ravel()[first]),
+            got=float(got.ravel()[first]),
+        )
+
     return Comparison(
         compared=usable.size,
         failures=int(over.sum()),
         matched=int((agree & (want_class != FINITE)).sum()),
-        disagreed=int((~agree).sum()),
+        disagreed=disagreeing.size,
         max_abs=float(deviation.max()) if deviation.size else 0.0,
         max_rel=float(relative.max()) if relative.size else 0.0,
         worst=worst,
+        inverted=inverted,
     )
 
 

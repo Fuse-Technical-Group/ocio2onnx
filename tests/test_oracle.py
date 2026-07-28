@@ -221,6 +221,27 @@ def test_an_inverted_infinity_does_not_pass():
     assert result.disagreed == 1
 
 
+def test_a_class_disagreement_names_the_sample_it_found():
+    """The count alone does not locate a direction inverted at overflow, which
+    is the misreading the harness exists to catch (§spec:verification). A
+    tolerance failure names its sample; so does this."""
+    samples = lattice()
+    want = np.zeros_like(samples, dtype=np.float64)
+    got = want.copy()
+    got[0, 1, 0, 3] = -np.inf
+    result = compare(want, got, samples)
+
+    assert not result.ok
+    assert result.inverted is not None
+    assert result.inverted.channel == 1
+    assert result.inverted.value == pytest.approx(float(samples[0, 1, 0, 3]))
+    assert result.inverted.want == 0.0
+    assert result.inverted.got == -np.inf
+    report = str(result)
+    assert "channel 1" in report
+    assert "-inf" in report
+
+
 def test_a_nan_reference_against_an_infinite_graph_does_not_pass():
     want = np.array([[[[1.0, np.nan, 3.0]]]])
     got = np.array([[[[1.0, np.inf, 3.0]]]])
@@ -239,10 +260,14 @@ def test_a_reference_that_is_nan_everywhere_is_not_evidence():
 
 
 def test_opposite_infinities_everywhere_are_not_evidence():
+    """Also the bare-vector case: a caller comparing two flat arrays carries no
+    channel axis to name, and reporting the disagreement must not need one."""
     result = compare(np.full(12, np.inf), np.full(12, -np.inf))
     assert not result.ok
     assert result.compared == 0
     assert result.disagreed == 12
+    assert result.inverted is not None
+    assert result.inverted.channel == 0
 
 
 def test_cpu_reference_preserves_shape_and_precision(config, config_uri):

@@ -56,20 +56,22 @@ several times as much, because 34 of the 40 `Lut1D` ops are half-domain:
 65536 entries indexed by the float16 *bit pattern* of the input, which
 standard ONNX has no cast to reach. OCIO hits the same wall on GLSL 1.2
 and reconstructs the index arithmetically; the compiler follows its
-shaders rather than inventing a second answer.
+shaders rather than inventing a second answer. An inverse table inverts
+once at compile time, onto that same half domain, so running a transform
+backwards costs no run-time search.
 
 Vendor differences are **coefficients, not code**: RED Log3G10, ARRI
 LogC4, CanonLog3, Apple Log and BMDFilm are all one parametric
 `LogCamera` op with different numbers, which OCIO supplies. Adding a
 camera is a config update.
 
-The other two are **refused by name at compile**, not approximated:
-`Lut1D`, and `FixedFunction` — the ACES output transform and the
-Rec.2100 surround adjustment. 48 transforms refuse; 28 of them carry a
-`FixedFunction` and the other 20 only a `Lut1D`. `Rec.2100-HLG - Display`
-is among the refusals, because HLG's surround adjustment is not a
-transfer curve — not because display views are unsupported. Stating the
-boundary as an op set is what keeps that case from being a surprise.
+`FixedFunction` is **refused by name at compile**, not approximated — the
+ACES output transform and the Rec.2100 surround adjustment. 28 transforms
+refuse, and every one of them carries a `FixedFunction`.
+`Rec.2100-HLG - Display` is among them, because HLG's surround adjustment
+is not a transfer curve — not because display views are unsupported.
+Stating the boundary as an op set is what keeps that case from being a
+surprise.
 
 Reproduce the split for a config of your choice:
 
@@ -134,7 +136,7 @@ either verifies or refuses with a named op, and none are skipped.
 ocio2onnx verify [--config URI]
 ```
 
-Against the pinned ACES Studio config: **111 verified, 48 refused, 0
+Against the pinned ACES Studio config: **131 verified, 28 refused, 0
 failed, 0 skipped, 159 total**.
 
 ## Trusting a config
@@ -147,9 +149,11 @@ file's terms, not this compiler's. Point it at configs you would run
 
 ## Status
 
-The closed-form compiler ships, with the oracle harness. `Lut1D` and the
-two `FixedFunction` styles are refused by name rather than approximated;
-they are the next sections of [ROADMAP.md](ROADMAP.md), along with live
+The closed-form compiler and the sampled-lookup compiler both ship, with
+the oracle harness: every transform in the pinned config that carries a
+`Lut1D` compiles and verifies, in either direction. The two
+`FixedFunction` styles are refused by name rather than approximated; they
+are the next section of [ROADMAP.md](ROADMAP.md), along with live
 parameters.
 
 ## License

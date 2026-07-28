@@ -1,7 +1,7 @@
 """Every transform in the pinned config carrying a ``Lut1D``, against the
 oracle (§spec:op-coverage, §spec:verification).
 
-The §road:sampled-luts acceptance test, and the counterpart to
+The sampled-lookup acceptance test, and the counterpart to
 ``test_closed_form_sweep``: between them the two modules assert the whole
 partition. 111 transforms are closed-form, 20 carry a table, 28 refuse on
 `FixedFunction`, and 111 + 20 + 28 is the config. So "all 131
@@ -28,8 +28,9 @@ SAMPLED_TRANSFORMS = 20
 REFUSED_TRANSFORMS = 28
 TOTAL_TRANSFORMS = 159
 
-#: Of the 20, the ones whose ``Lut1D`` arrives inverse — the eight
-#: §road:inverse-lut unblocked.
+#: Of the 20, the ones whose ``Lut1D`` arrives inverse, which the compiler
+#: inverts at compile time rather than searching at run time
+#: (§spec:op-emission).
 INVERSE_TRANSFORMS = 8
 
 #: The one op every refusal names. A refusal naming anything else would mean

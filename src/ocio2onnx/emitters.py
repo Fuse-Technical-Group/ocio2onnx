@@ -33,6 +33,7 @@ UNBOUNDED = 1e30
 #: How OCIO's negative-value styles are named, with the enum prefix dropped.
 MIRROR = "MIRROR"
 PASS_THRU = "PASS_THRU"
+LINEAR = "LINEAR"
 
 
 class UnsupportedOpError(NotImplementedError):
@@ -253,3 +254,119 @@ def _signed_power(builder: GraphBuilder, x: str, exponent: str, style: str) -> s
         return builder.mul(builder.op("Sign", [x]), magnitude)
     below = builder.op("Less", [x, builder.scalar("zero", 0.0)])
     return builder.where(below, x, magnitude)
+
+
+@dataclasses.dataclass(frozen=True)
+class MonCurve:
+    """Where a monitor curve meets its linear segment, and that segment's slope.
+
+    Above the break ``y = ((x + off)/(1 + off))**g``; below it ``y = k*x``.
+    """
+
+    x_break: float
+    y_break: float
+    slope: float
+
+
+def moncurve(gamma: float, offset: float) -> MonCurve:
+    """The C1-continuous join between the curve and its linear segment.
+
+    ``slope`` is the curve's derivative at the break, which is what makes the
+    join C1 rather than merely continuous. Do not re-derive it: a plausible
+    closed form for it is wrong by a factor of around 50, and nothing but the
+    oracle reports that — the values either side of the break stay close
+    enough to look right.
+
+    A zero offset degenerates. It never occurs in the pinned config, measured
+    across every ``ExponentWithLinear`` op in it, so it is refused rather than
+    approximated by a plain ``Exponent``.
+    """
+    if offset == 0.0:
+        raise UnsupportedOpError(
+            "ExponentWithLinear with a zero offset has no linear segment and "
+            "no break; this compiler does not emit one"
+        )
+    x_break = offset / (gamma - 1.0)
+    slope = (gamma / (1.0 + offset)) * ((x_break + offset) / (1.0 + offset)) ** (
+        gamma - 1.0
+    )
+    return MonCurve(x_break=x_break, y_break=slope * x_break, slope=slope)
+
+
+def _moncurves(transform: Any) -> list[MonCurve]:
+    """One join per channel."""
+    return [
+        moncurve(gamma, offset)
+        for gamma, offset in zip(
+            _channels(transform.getGamma()),
+            _channels(transform.getOffset()),
+            strict=True,
+        )
+    ]
+
+
+def exponent_with_linear_breakpoints(transform: Any) -> list[float]:
+    """Zero, plus the break — which lies in the encoded domain when the op
+    arrives inverse, not in the linear one."""
+    inverse = _is_inverse(transform)
+    return [0.0] + [
+        curve.y_break if inverse else curve.x_break for curve in _moncurves(transform)
+    ]
+
+
+@register("ExponentWithLinearTransform", breakpoints=exponent_with_linear_breakpoints)
+def emit_exponent_with_linear(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """A monitor curve above the break, a straight line below it.
+
+    ``MIRROR`` runs the whole thing on ``|x|`` and puts the sign back;
+    ``LINEAR`` extends the linear segment through the origin instead, so its
+    negative half is a straight line rather than a reflected curve.
+
+    Each ``Pow`` takes a clipped base. That is not defensive decoration:
+    ``Where`` evaluates both branches, and the branch it discards would
+    otherwise raise a negative number to a fractional power and hand back NaN.
+    """
+    curves = _moncurves(transform)
+    gamma = _channels(transform.getGamma())
+    offset = _channels(transform.getOffset())
+    style = _negative_style(transform, (MIRROR, LINEAR))
+
+    source = builder.op("Abs", [x]) if style == MIRROR else x
+    zero = builder.scalar("zero", 0.0)
+    slope = builder.per_channel("moncurve_slope", [curve.slope for curve in curves])
+    offsets = builder.per_channel("moncurve_offset", offset)
+    scaled = builder.per_channel(
+        "moncurve_denominator", [1.0 + value for value in offset]
+    )
+
+    if _is_inverse(transform):
+        linear = builder.div(source, slope)
+        curved = builder.sub(
+            builder.mul(
+                builder.pow(
+                    builder.op("Clip", [source, zero]),
+                    builder.per_channel(
+                        "moncurve_reciprocal_gamma", [1.0 / value for value in gamma]
+                    ),
+                ),
+                scaled,
+            ),
+            offsets,
+        )
+        breaks = builder.per_channel(
+            "moncurve_break", [curve.y_break for curve in curves]
+        )
+    else:
+        linear = builder.mul(source, slope)
+        curved = builder.pow(
+            builder.op(
+                "Clip", [builder.div(builder.add(source, offsets), scaled), zero]
+            ),
+            builder.per_channel("moncurve_gamma", gamma),
+        )
+        breaks = builder.per_channel(
+            "moncurve_break", [curve.x_break for curve in curves]
+        )
+
+    y = builder.where(builder.op("Less", [source, breaks]), linear, curved)
+    return builder.mul(builder.op("Sign", [x]), y) if style == MIRROR else y

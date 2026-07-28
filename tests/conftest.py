@@ -57,14 +57,21 @@ def check(compile_bare):
     Compiles one unless the caller hands over the model it already holds, as
     ``oracle.verify`` does — so a test of the public API verifies the artifact
     that API returned rather than a second compilation of the same request.
+
+    ``parameters`` binds the graph's live inputs (§spec:dynamic-properties).
+    A sweep hands over one graph and a processor OCIO built at the swept value,
+    which is the claim a live parameter makes: the same artifact, not a
+    recompilation.
     """
 
-    def check(processor, label="bare", model=None):
+    def check(processor, label="bare", model=None, parameters=None):
         samples = lattice(processor)
         return compare(
             cpu_reference(processor, samples),
             run_graph(
-                compile_bare(processor, label) if model is None else model, samples
+                compile_bare(processor, label) if model is None else model,
+                samples,
+                parameters,
             ),
             samples,
         )

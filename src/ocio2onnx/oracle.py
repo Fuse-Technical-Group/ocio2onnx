@@ -14,6 +14,8 @@ graph verifies only once the finite kind has occurred (§spec:evidence-floor).
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 import onnx
@@ -241,12 +243,23 @@ def cpu_reference(processor: OCIO.Processor, samples: np.ndarray) -> np.ndarray:
     )
 
 
-def run_graph(model: onnx.ModelProto, samples: np.ndarray) -> np.ndarray:
-    """Execute an emitted graph over ``samples``."""
+def run_graph(
+    model: onnx.ModelProto,
+    samples: np.ndarray,
+    parameters: Mapping[str, Any] | None = None,
+) -> np.ndarray:
+    """Execute an emitted graph over ``samples``.
+
+    ``parameters`` binds live inputs (§spec:dynamic-properties). One left
+    unbound reads the default the graph carries, which is what makes a sweep a
+    statement about one artifact rather than about several.
+    """
     session = ort.InferenceSession(
         model.SerializeToString(), providers=["CPUExecutionProvider"]
     )
     inputs = {INPUT: np.ascontiguousarray(samples, dtype=np.float32)}
+    for name, value in (parameters or {}).items():
+        inputs[name] = np.asarray(value, dtype=np.float32)
     return session.run(None, inputs)[0]
 
 

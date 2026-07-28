@@ -118,6 +118,58 @@ REC2100_LUMA = (0.2627, 0.6780, 0.0593)
 #: chosen, as ``LOG_FLOOR`` is.
 REC2100_MIN_LUM = 1e-4
 
+#: OCIO's three scalar dynamic property types, spelled as its
+#: ``DynamicPropertyType`` spells them and used verbatim as graph input names
+#: (§spec:dynamic-properties).
+EXPOSURE = "EXPOSURE"
+CONTRAST = "CONTRAST"
+GAMMA = "GAMMA"
+
+#: The ``ExposureContrast`` styles this compiler emits. ``linear`` and
+#: ``video`` pivot a power; ``log`` is an affine.
+EC_LINEAR = "LINEAR"
+EC_VIDEO = "VIDEO"
+EC_LOGARITHMIC = "LOGARITHMIC"
+EXPOSURE_CONTRAST_STYLES = (EC_LINEAR, EC_VIDEO, EC_LOGARITHMIC)
+
+#: OCIO's floors on ``contrast * gamma`` and on the pivot. Read off its own
+#: renderer, as ``LOG_FLOOR`` is: a contrast of zero is a knob position the op
+#: answers rather than refuses, and these are what it answers with.
+EC_MIN_CONTRAST = 0.001
+EC_MIN_PIVOT = 0.001
+
+#: The ``video`` style's OETF power. It exponentiates the exposure gain and the
+#: pivot alike, which is the whole of what separates that style from
+#: ``linear``.
+EC_VIDEO_POWER = 1.0 / 1.83
+
+#: ASC CDL's four parameters, as graph input names. OCIO declares no dynamic
+#: property for a CDL — its run time bakes the numbers into the op — but a
+#: grade is the live parameter the emitted artifact exists for
+#: (§spec:dynamic-properties), so they reach the graph as inputs regardless.
+CDL_SLOPE = "CDL_SLOPE"
+CDL_OFFSET = "CDL_OFFSET"
+CDL_POWER = "CDL_POWER"
+CDL_SATURATION = "CDL_SATURATION"
+
+#: The CDL styles this compiler emits. ``ASC`` holds the picture in the unit
+#: interval either side of the power; ``NO_CLAMP`` clamps nowhere and passes
+#: the negative half of the domain through the power untouched.
+CDL_ASC = "ASC"
+CDL_NO_CLAMP = "NO_CLAMP"
+CDL_STYLES = (CDL_ASC, CDL_NO_CLAMP)
+
+#: The interval ``ASC`` clamps to.
+CDL_CLAMP = (0.0, 1.0)
+
+#: What OCIO floors a slope, a power, or a saturation at before reciprocating
+#: it for the inverse, so no inverted parameter exceeds 100. Read off its own
+#: pre-inverted constants: a slope of 0.011 inverts to 90.909 and everything at
+#: or below 0.01 inverts to 100. Without the floor a collapsed channel — a
+#: slope of zero, a fully desaturated grade — would invert to an infinity and
+#: take the whole picture with it.
+CDL_MIN_INVERTIBLE = 0.01
+
 
 class UnsupportedOpError(NotImplementedError):
     """An op, or a parameter of one, the compiler does not emit.
@@ -256,6 +308,23 @@ def _negative_style(transform: Any, supported: tuple[str, ...]) -> str:
         raise UnsupportedOpError(
             f"{op} negative style {style} is not emitted by this compiler; "
             f"it emits {', '.join(supported)}"
+        )
+    return style
+
+
+def _style(transform: Any, supported: tuple[str, ...], prefix: str) -> str:
+    """This op's style, refused by name where this compiler has no path for it.
+
+    The same reading as ``_negative_style``: a style an OCIO release adds is a
+    different transform rather than a nearby one, so it is refused rather than
+    approximated by whichever implemented style resembles it
+    (§spec:op-coverage).
+    """
+    style = _enum_member(transform.getStyle(), prefix)
+    if style not in supported:
+        raise UnsupportedOpError(
+            f"{op_name(transform)} style {style} is not emitted by this "
+            f"compiler; it emits {', '.join(supported)}"
         )
     return style
 
@@ -2012,3 +2081,257 @@ def _remap(builder: GraphBuilder, colourfulness: str, boundary: str, reach: str)
             builder.div(builder.mul(scale, normalised), builder.add(one, normalised)),
         ),
     )
+
+
+def exposure_contrast_breakpoints(transform: Any) -> list[float]:
+    """Zero, where the pivoted power floors its base.
+
+    The ``log`` style is an affine over the whole line and declares none. The
+    breakpoint does not move with the exposure knob: the gain multiplies the
+    value the floor is applied to, so the input it engages at stays zero.
+    """
+    style = _enum_member(transform.getStyle(), "EXPOSURE_CONTRAST_")
+    return [] if style == EC_LOGARITHMIC else [0.0]
+
+
+@register("ExposureContrast", breakpoints=exposure_contrast_breakpoints)
+def emit_exposure_contrast(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """Exposure, contrast, and gamma as graph inputs (§spec:dynamic-properties).
+
+    The three arrive live, so what a static emitter would fold at compile time
+    — the gain ``2 ** exposure``, the floored ``contrast * gamma``, the log
+    style's offset — is arithmetic in the graph instead. That is the trade the
+    whole feature is: a handful of scalar ops per frame in exchange for a grade
+    that moves without a recompile.
+
+    Every step is read off OCIO's own renderer rather than off a published
+    definition, as `Lut1D`'s half index is (§spec:op-emission). Three of them
+    would be easy to tidy away and are not: the contrast floor, the short
+    circuit at a contrast of one (`_pivoted_power`), and which side of the
+    reciprocal the floor sits on, which differs between the styles
+    (`_ec_contrast`).
+
+    The floor is ``std::max`` rather than ONNX ``Max``. The two differ at NaN,
+    and a live knob is a value from outside the graph — where a baked
+    coefficient came from a config OCIO had already validated (`_std_max`).
+    """
+    style = _style(transform, EXPOSURE_CONTRAST_STYLES, "EXPOSURE_CONTRAST_")
+    inverse = _is_inverse(transform)
+
+    exposure = builder.scalar_parameter(EXPOSURE, transform.getExposure())
+    contrast = builder.scalar_parameter(CONTRAST, transform.getContrast())
+    gamma = builder.scalar_parameter(GAMMA, transform.getGamma())
+    product = builder.mul(contrast, gamma)
+
+    if style == EC_LOGARITHMIC:
+        # The log style's inverse reciprocates before it floors, so a negative
+        # product reaches the slope as 0.001 rather than as 1000.
+        slope = _ec_contrast(builder, product, reciprocal_first=inverse)
+        stops = builder.mul(
+            exposure,
+            builder.scalar(
+                "ec_log_exposure_step", float(transform.getLogExposureStep())
+            ),
+        )
+        mid_grey = builder.scalar("ec_log_mid_gray", float(transform.getLogMidGray()))
+        if inverse:
+            offset = builder.sub(
+                builder.sub(mid_grey, builder.mul(mid_grey, slope)), stops
+            )
+        else:
+            offset = builder.add(
+                builder.mul(builder.sub(stops, mid_grey), slope), mid_grey
+            )
+        return builder.add(builder.mul(x, slope), offset)
+
+    # The pivoted styles floor before they reciprocate, so a product at or
+    # below the floor reaches the exponent as 1000 rather than as 0.001.
+    power = _ec_contrast(builder, product, reciprocal_first=False)
+    if inverse:
+        power = builder.div(builder.scalar("one", 1.0), power)
+
+    gain = builder.pow(builder.scalar("two", 2.0), exposure)
+    pivot = max(EC_MIN_PIVOT, float(transform.getPivot()))
+    if style == EC_VIDEO:
+        gain = builder.pow(gain, builder.scalar("ec_video_power", EC_VIDEO_POWER))
+        pivot = pivot**EC_VIDEO_POWER
+    pivoted = builder.scalar("ec_pivot", pivot)
+
+    if inverse:
+        return builder.div(_pivoted_power(builder, x, pivoted, power), gain)
+    return _pivoted_power(builder, builder.mul(x, gain), pivoted, power)
+
+
+def _ec_contrast(builder: GraphBuilder, product: str, *, reciprocal_first: bool) -> str:
+    """``contrast * gamma``, held at OCIO's floor.
+
+    Which side of the reciprocal the floor sits on is the reference's, not a
+    tidied reading of it, and the two orders part company below the floor. The
+    pivoted styles floor the product — a product of ``-1.1`` reaches their
+    inverse as an exponent of 1000. The log style's inverse reciprocates first
+    and floors the result — the same product reaches its slope as 0.001, and a
+    product of 0.0005 reaches it as 2000 rather than as 1000. Measured against
+    the CPU processor across the sign change and either side of the floor.
+
+    ``std::max`` rather than ONNX ``Max``: the two differ at NaN, and the floor
+    is what OCIO answers a NaN knob with (`_std_max`).
+    """
+    floor = builder.scalar("ec_min_contrast", EC_MIN_CONTRAST)
+    if reciprocal_first:
+        product = builder.div(builder.scalar("one", 1.0), product)
+    return _std_max(builder, floor, product)
+
+
+def _pivoted_power(builder: GraphBuilder, x: str, pivot: str, power: str) -> str:
+    """``pow(max(0, x / pivot), power) * pivot``, the identity at power one.
+
+    The short circuit is OCIO's and it is load bearing rather than an
+    optimization: the base is floored at zero, so evaluating the power at an
+    exponent of one would clip the negative half of the domain to black instead
+    of leaving it alone. ``Where`` selects rather than branches, so both arms
+    are evaluated whichever the exponent turns out to be.
+    """
+    floored = _std_max(builder, builder.scalar("zero", 0.0), builder.div(x, pivot))
+    return builder.where(
+        builder.op("Equal", [power, builder.scalar("one", 1.0)]),
+        x,
+        builder.mul(builder.pow(floored, power), pivot),
+    )
+
+
+def cdl_breakpoints(transform: Any) -> list[float]:
+    """Where the graph branches, at the parameters' defaults.
+
+    Forward, both styles branch on the graded value: ``ASC`` clamps it to the
+    unit interval, ``NO_CLAMP`` switches the power's sign handling at zero. So
+    the branches are those bounds read back through the slope and the offset.
+
+    Inverse, ``ASC``'s first clamp is on the input itself. ``NO_CLAMP``'s sign
+    branch sits behind the saturation, which crosses channels, so no input
+    value places it exactly; it is stated on the diagonal, where the saturation
+    is the identity, as ``rec2100_surround_breakpoints`` states its floor.
+
+    A collapsed channel — a slope of zero — puts a bound at infinity, and the
+    lattice takes finite values, so nothing is offered for it.
+    """
+    style = _enum_member(transform.getStyle(), "CDL_")
+    if _is_inverse(transform):
+        return list(CDL_CLAMP) if style == CDL_ASC else [0.0]
+
+    slopes = _channels(transform.getSlope())
+    offsets = _channels(transform.getOffset())
+    graded = [
+        (bound - offset) / slope
+        for bound in (CDL_CLAMP if style == CDL_ASC else CDL_CLAMP[:1])
+        for slope, offset in zip(slopes, offsets, strict=True)
+        if slope
+    ]
+    return sorted(value for value in graded if math.isfinite(value))
+
+
+@register("CDL", breakpoints=cdl_breakpoints)
+def emit_cdl(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """Slope, offset, power, and saturation as graph inputs
+    (§spec:dynamic-properties).
+
+    The four defaults are the forward grade OCIO reports, whichever direction
+    the op runs: the knob a colourist turns is the CDL's slope, not the
+    reciprocal an inverse happens to multiply by. OCIO pre-inverts the four at
+    compile time and reverses the order of the operations; a live parameter can
+    only take the second half of that, so the reciprocals are emitted.
+
+    The order of the operations, both clamping styles, and the luminance
+    weights are read off OCIO's own shader (§spec:op-emission). The weights in
+    particular are read rather than assumed — a config may state its own.
+    """
+    style = _style(transform, CDL_STYLES, "CDL_")
+    inverse = _is_inverse(transform)
+    clamps = style == CDL_ASC
+
+    slope = builder.channel_parameter(CDL_SLOPE, _channels(transform.getSlope()))
+    offset = builder.channel_parameter(CDL_OFFSET, _channels(transform.getOffset()))
+    power = builder.channel_parameter(CDL_POWER, _channels(transform.getPower()))
+    saturation = builder.scalar_parameter(CDL_SATURATION, float(transform.getSat()))
+    luma = builder.per_channel("cdl_luma", _channels(transform.getSatLumaCoefs()))
+
+    if not inverse:
+        y = builder.add(builder.mul(x, slope), offset)
+        y = (
+            builder.pow(_cdl_clamp(builder, y), power)
+            if clamps
+            else _cdl_signed_power(builder, y, power)
+        )
+        y = _cdl_saturate(builder, y, saturation, luma)
+        return _cdl_clamp(builder, y) if clamps else y
+
+    y = _cdl_clamp(builder, x) if clamps else x
+    y = _cdl_saturate(builder, y, _cdl_invert(builder, saturation), luma)
+    reciprocal = _cdl_invert(builder, power)
+    y = (
+        builder.pow(_cdl_clamp(builder, y), reciprocal)
+        if clamps
+        else _cdl_signed_power(builder, y, reciprocal)
+    )
+    y = builder.mul(builder.sub(y, offset), _cdl_invert(builder, slope))
+    return _cdl_clamp(builder, y) if clamps else y
+
+
+def _cdl_invert(builder: GraphBuilder, value: str) -> str:
+    """``1 / max(0.01, value)``, which is how OCIO inverts a CDL parameter.
+
+    The floor is the reference's (`CDL_MIN_INVERTIBLE`) and it is what keeps a
+    collapsed channel invertible: a slope of zero reaches the graph as 100
+    rather than as an infinity that would carry the whole picture with it.
+    OCIO applies it at compile time, where a static emitter would fold it; a
+    live parameter has to carry it into the graph.
+    """
+    return builder.div(
+        builder.scalar("one", 1.0),
+        _std_max(
+            builder, builder.scalar("cdl_min_invertible", CDL_MIN_INVERTIBLE), value
+        ),
+    )
+
+
+def _cdl_clamp(builder: GraphBuilder, x: str) -> str:
+    """Hold a value in the unit interval, which is what makes ``ASC`` ``ASC``."""
+    return builder.op(
+        "Clip",
+        [
+            x,
+            builder.scalar("cdl_low", CDL_CLAMP[0]),
+            builder.scalar("cdl_high", CDL_CLAMP[1]),
+        ],
+    )
+
+
+def _cdl_signed_power(builder: GraphBuilder, x: str, power: str) -> str:
+    """``pow(|x|, power)`` at or above zero, ``x`` itself below it.
+
+    OCIO's unclamped style passes the negative half of the domain through the
+    power untouched. ``Abs`` first because ONNX ``Pow`` on a negative base with
+    a fractional exponent is NaN and ``Where`` evaluates both arms, as
+    ``_signed_power`` does for `Exponent`.
+    """
+    return builder.where(
+        builder.op("GreaterOrEqual", [x, builder.scalar("zero", 0.0)]),
+        builder.pow(builder.op("Abs", [x]), power),
+        x,
+    )
+
+
+def _cdl_saturate(builder: GraphBuilder, x: str, saturation: str, luma: str) -> str:
+    """``luma + saturation * (x - luma)``, on one luminance per pixel.
+
+    Crosses channels, as `REC2100_SURROUND` does: a per-channel reading agrees
+    on every neutral pixel and disagrees on every coloured one.
+    """
+    luminance = builder.op(
+        "ReduceSum",
+        [
+            builder.mul(x, luma),
+            builder.constant("cdl_axis", [CHANNEL_AXIS], dtype=np.int64),
+        ],
+        keepdims=1,
+    )
+    return builder.add(luminance, builder.mul(saturation, builder.sub(x, luminance)))

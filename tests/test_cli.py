@@ -302,6 +302,88 @@ def test_a_config_naming_a_missing_lut_is_refused_without_a_traceback(
     assert "Traceback" not in err
 
 
+#: A config carrying the two ops whose parameters reach the graph live
+#: (§spec:dynamic-properties). The pinned config carries neither, and a live
+#: parameter is the capability that distinguishes an emitted graph from a baked
+#: table, so the surface it is checked on is a config a caller could hand over.
+#:
+#: The exposure op is the ``log`` style because this one is verified. OCIO's
+#: ExposureContrast renderer uses an approximate power, which leaves the
+#: pivoted styles about 1.3e-5 out relatively — inside the tolerance alone, and
+#: outside it once a CDL saturation downstream cancels, at 5e-4 on one sample
+#: of the lattice (§spec:dynamic-properties). The ``log`` style carries no
+#: power, so the pair agrees exactly.
+CONFIG_WITH_A_LIVE_GRADE = """ocio_profile_version: 2
+roles:
+  default: ref
+  reference: ref
+colorspaces:
+  - !<ColorSpace>
+    name: ref
+  - !<ColorSpace>
+    name: graded
+    from_scene_reference: !<GroupTransform>
+      children:
+        - !<ExposureContrastTransform> {style: log, exposure: 0.5, contrast: 1.2}
+        - !<CDLTransform> {slope: [1.1, 1, 0.9], power: [1.2, 1, 0.8], sat: 1.3}
+"""
+
+#: What that config's graph takes beyond the image, in declaration order.
+LIVE_PARAMETERS = (
+    "EXPOSURE",
+    "CONTRAST",
+    "GAMMA",
+    "CDL_SLOPE",
+    "CDL_OFFSET",
+    "CDL_POWER",
+    "CDL_SATURATION",
+)
+
+
+@pytest.fixture
+def config_with_a_live_grade(tmp_path):
+    path = tmp_path / "graded.ocio"
+    path.write_text(CONFIG_WITH_A_LIVE_GRADE)
+    return str(path)
+
+
+def test_compile_emits_live_parameters_and_says_what_they_are(
+    config_with_a_live_grade, graph, capsys
+):
+    """§road:scalar-dynamics, end to end: a caller compiles a graded transform
+    and gets a graph whose grade is a set of named, defaulted inputs it can
+    vary per frame without compiling again."""
+    code = main(
+        [
+            "compile",
+            "--from",
+            "ref",
+            "--to",
+            "graded",
+            "-o",
+            graph,
+            "--config",
+            config_with_a_live_grade,
+            "--verify",
+        ]
+    )
+    assert code == OK
+
+    declared = [value.name for value in onnx.load(graph).graph.input]
+    assert declared == ["input", *LIVE_PARAMETERS]
+
+    printed = capsys.readouterr().out
+    assert "live parameters" in printed
+    for name in LIVE_PARAMETERS:
+        assert name in printed
+    assert "1.3" in printed
+
+
+def test_compile_says_nothing_about_parameters_where_there_are_none(graph, capsys):
+    assert main(["compile", "--from", PAIR[0], "--to", PAIR[1], "-o", graph]) == OK
+    assert "live parameters" not in capsys.readouterr().out
+
+
 def test_an_unwritable_output_path_is_refused_without_a_traceback(tmp_path, capsys):
     missing = str(tmp_path / "no-such-directory" / "graph.onnx")
     code = main(["compile", "--from", PAIR[0], "--to", PAIR[1], "-o", missing])

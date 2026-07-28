@@ -3,11 +3,15 @@
 OCIO stays the authority for what a transform is; this package only changes
 what can execute it (§spec:problem-statement).
 
-The two entry points here are the whole public surface. Each loads a config,
+The two entry points here are the whole compiling surface. Each loads a config,
 resolves a request against it, and compiles the processor OCIO returns; the
 CLI wraps them rather than duplicating them. They hold no logic of their own,
 so what an emitted graph is worth is settled by the modules they compose and
 by the oracle (§spec:verification), not here.
+
+``parameters`` is re-exported beside them because a graph's live inputs are
+the one thing about it a caller has to discover rather than assume
+(§spec:dynamic-properties).
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from ocio2onnx.addressing import (
     resolve_colorspaces,
     resolve_display_view,
 )
+from ocio2onnx.builder import parameters
 from ocio2onnx.compiler import UnsupportedOpError, compile_processor
 
 if TYPE_CHECKING:
@@ -37,6 +42,7 @@ __all__ = [
     "__version__",
     "compile_colorspaces",
     "compile_display_view",
+    "parameters",
     "verify",
 ]
 

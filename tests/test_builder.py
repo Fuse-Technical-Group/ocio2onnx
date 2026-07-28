@@ -12,8 +12,10 @@ from ocio2onnx.builder import (
     IMAGE_SHAPE,
     INPUT,
     OUTPUT,
+    PARAMETER_SHAPE,
     SCALAR_SHAPE,
     GraphBuilder,
+    parameters,
 )
 from ocio2onnx.oracle import run_graph
 
@@ -83,3 +85,72 @@ def test_an_empty_chain_is_still_a_valid_graph():
     model = GraphBuilder().build(INPUT, "identity", {})
     assert [value.name for value in model.graph.output] == [OUTPUT]
     assert np.array_equal(run_graph(model, SAMPLES), SAMPLES)
+
+
+def test_a_scalar_parameter_is_a_graph_input_defaulting_to_its_ocio_value():
+    """A live parameter is an ONNX input backed by an initializer, which is how
+    the format spells "input with a default" (§spec:dynamic-properties)."""
+    builder = GraphBuilder()
+    gain = builder.scalar_parameter("GAIN", 2.0)
+    model = builder.build(builder.mul(INPUT, gain), "gain", {})
+
+    assert [value.name for value in model.graph.input] == [INPUT, "GAIN"]
+    assert parameters(model) == {"GAIN": pytest.approx([2.0])}
+    assert run_graph(model, SAMPLES) == pytest.approx(SAMPLES * 2.0)
+
+
+def test_a_scalar_parameter_is_varied_without_recompiling():
+    """The whole point of a graph over a baked table: one artifact, a knob a
+    consumer turns per frame (§spec:dynamic-properties)."""
+    builder = GraphBuilder()
+    gain = builder.scalar_parameter("GAIN", 2.0)
+    model = builder.build(builder.mul(INPUT, gain), "gain", {})
+
+    assert run_graph(model, SAMPLES, {"GAIN": [5.0]}) == pytest.approx(SAMPLES * 5.0)
+
+
+def test_a_channel_parameter_is_declared_flat_and_broadcasts_across_channels():
+    """A consumer binds three numbers, not a four-dimensional array; the
+    reshape onto the image's channel axis is the graph's business."""
+    builder = GraphBuilder()
+    gain = builder.channel_parameter("GAIN", [1.0, 2.0, 3.0])
+    model = builder.build(builder.mul(INPUT, gain), "gain", {})
+
+    (declared,) = [value for value in model.graph.input if value.name == "GAIN"]
+    assert [d.dim_value for d in declared.type.tensor_type.shape.dim] == list(
+        PARAMETER_SHAPE
+    )
+    assert run_graph(model, SAMPLES, {"GAIN": [4.0, 5.0, 6.0]}) == pytest.approx(
+        SAMPLES * np.array([4.0, 5.0, 6.0]).reshape(CHANNEL_SHAPE)
+    )
+
+
+def test_two_ops_claiming_one_parameter_name_get_a_knob_each():
+    """Two graded ops in one transform carry their own defaults, so one shared
+    input would have to drop one of them."""
+    builder = GraphBuilder()
+    first = builder.scalar_parameter("GAIN", 2.0)
+    second = builder.scalar_parameter("GAIN", 3.0)
+    model = builder.build(builder.mul(builder.mul(INPUT, first), second), "gain", {})
+
+    assert list(parameters(model)) == ["GAIN", "GAIN_2"]
+    assert run_graph(model, SAMPLES) == pytest.approx(SAMPLES * 6.0)
+    assert run_graph(model, SAMPLES, {"GAIN_2": [1.0]}) == pytest.approx(SAMPLES * 2.0)
+
+
+def test_a_graph_without_a_live_parameter_declares_only_the_image():
+    model = GraphBuilder().build(INPUT, "identity", {})
+    assert [value.name for value in model.graph.input] == [INPUT]
+    assert parameters(model) == {}
+
+
+def test_a_parameter_default_is_float32_at_its_declared_shape():
+    builder = GraphBuilder()
+    builder.scalar_parameter("GAIN", 2.0)
+    builder.channel_parameter("TINT", [1.0, 2.0, 3.0])
+    model = builder.build(INPUT, "shapes", {})
+
+    defaults = parameters(model)
+    assert defaults["GAIN"].shape == SCALAR_SHAPE
+    assert defaults["TINT"].shape == PARAMETER_SHAPE
+    assert all(value.dtype == np.float32 for value in defaults.values())

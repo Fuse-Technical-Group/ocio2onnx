@@ -15,7 +15,7 @@ from ocio2onnx.addressing import (
     resolve_colorspaces,
     resolve_display_view,
 )
-from ocio2onnx.compiler import compile_processor, unsupported_ops
+from ocio2onnx.compiler import compile_processor, op_names, unsupported_ops
 from ocio2onnx.emitters import REGISTRY, UnsupportedOpError, op_label, supported_ops
 
 #: The pair the compiler emits.
@@ -87,6 +87,11 @@ def test_the_refusal_names_the_fixed_function_style(resolve):
 def test_an_op_with_no_distinguishing_attribute_is_named_by_its_type(resolve):
     display, view = "Rec.2100-PQ - Display", "Un-tone-mapped"
     assert "Lut1D" in unsupported_ops(resolve(display, view).processor)
+
+
+def test_op_names_strip_the_transform_suffix(config):
+    processor = config.getProcessor("Log3G10 REDWideGamutRGB", "ACES2065-1")
+    assert op_names(processor) == ["LogCamera", "Matrix"]
 
 
 def test_op_label_reads_the_transform_rather_than_the_op_list():

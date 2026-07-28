@@ -22,8 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from ocio2onnx.addressing import CHANNELS
-from ocio2onnx.builder import GraphBuilder
+from ocio2onnx.builder import CHANNELS, GraphBuilder
 
 #: A ``Range`` bound OCIO leaves unset arrives as NaN, and ``Clip`` needs a
 #: number. This stands in for "no bound": float16's finite limit is 65504, so
@@ -103,7 +102,12 @@ def supported_ops() -> frozenset[str]:
     return frozenset(name.removesuffix("Transform") for name in REGISTRY)
 
 
-def _enum_member(value: Any, prefix: str = "") -> str:
+def op_name(transform: Any) -> str:
+    """One op's bare type name, as the registry and the census spell it."""
+    return type(transform).__name__.removesuffix("Transform")
+
+
+def _enum_member(value: Any, prefix: str) -> str:
     """An OCIO enum member's bare name. ``str`` gives ``Class.MEMBER``, and the
     member repeats its class in the prefix callers drop here."""
     return str(value).rsplit(".", 1)[-1].removeprefix(prefix)
@@ -128,9 +132,8 @@ def op_label(transform: Any) -> str:
     An op type with a distinguishing attribute names it; one without names the
     type alone.
     """
-    class_name = type(transform).__name__
-    op = class_name.removesuffix("Transform")
-    attribute = DISTINGUISHING.get(class_name)
+    op = op_name(transform)
+    attribute = DISTINGUISHING.get(type(transform).__name__)
     return f"{op}[{attribute(transform)}]" if attribute is not None else op
 
 
@@ -171,7 +174,7 @@ def _negative_style(transform: Any, supported: tuple[str, ...]) -> str:
     """
     style = _enum_member(transform.getNegativeStyle(), "NEGATIVE_")
     if style not in supported:
-        op = type(transform).__name__.removesuffix("Transform")
+        op = op_name(transform)
         raise UnsupportedOpError(
             f"{op} negative style {style} is not emitted by this compiler; "
             f"it emits {', '.join(supported)}"
@@ -386,7 +389,16 @@ def emit_exponent_with_linear(builder: GraphBuilder, transform: Any, x: str) -> 
         "moncurve_denominator", [1.0 + value for value in offset]
     )
 
-    if _is_inverse(transform):
+    inverse = _is_inverse(transform)
+    # The break lies in the encoded domain when the op arrives inverse and in
+    # the linear one when it does not, as ``exponent_with_linear_breakpoints``
+    # declares.
+    breaks = builder.per_channel(
+        "moncurve_break",
+        [curve.y_break if inverse else curve.x_break for curve in curves],
+    )
+
+    if inverse:
         linear = builder.div(source, slope)
         curved = builder.sub(
             builder.mul(
@@ -400,9 +412,6 @@ def emit_exponent_with_linear(builder: GraphBuilder, transform: Any, x: str) -> 
             ),
             offsets,
         )
-        breaks = builder.per_channel(
-            "moncurve_break", [curve.y_break for curve in curves]
-        )
     else:
         linear = builder.mul(source, slope)
         curved = builder.pow(
@@ -410,9 +419,6 @@ def emit_exponent_with_linear(builder: GraphBuilder, transform: Any, x: str) -> 
                 "Clip", [builder.div(builder.add(source, offsets), scaled), zero]
             ),
             builder.per_channel("moncurve_gamma", gamma),
-        )
-        breaks = builder.per_channel(
-            "moncurve_break", [curve.x_break for curve in curves]
         )
 
     y = builder.where(builder.op("Less", [source, breaks]), linear, curved)
@@ -531,7 +537,14 @@ def emit_log_camera(builder: GraphBuilder, transform: Any, x: str) -> str:
     linear_slope = builder.per_channel("logcamera_linear_slope", curve.linear_slope)
     linear_offset = builder.per_channel("logcamera_linear_offset", curve.linear_offset)
 
-    if _is_inverse(transform):
+    inverse = _is_inverse(transform)
+    # The break lies in the encoded domain when the op arrives inverse and in
+    # the linear one when it does not, as ``log_camera_breakpoints`` declares.
+    breaks = builder.per_channel(
+        "logcamera_break", curve.log_break if inverse else curve.lin_break
+    )
+
+    if inverse:
         exponent = builder.div(
             builder.sub(x, log_offset),
             builder.per_channel("logcamera_log_slope", curve.log_slope),
@@ -544,7 +557,6 @@ def emit_log_camera(builder: GraphBuilder, transform: Any, x: str) -> str:
             lin_slope,
         )
         linear = builder.div(builder.sub(x, linear_offset), linear_slope)
-        breaks = builder.per_channel("logcamera_break", curve.log_break)
     else:
         argument = builder.op(
             "Clip",
@@ -564,6 +576,5 @@ def emit_log_camera(builder: GraphBuilder, transform: Any, x: str) -> str:
             log_offset,
         )
         linear = builder.add(builder.mul(x, linear_slope), linear_offset)
-        breaks = builder.per_channel("logcamera_break", curve.lin_break)
 
     return builder.where(builder.op("Less", [x, breaks]), linear, curved)

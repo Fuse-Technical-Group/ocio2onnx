@@ -18,7 +18,12 @@ from ocio2onnx.emitters import UnsupportedOpError
 
 #: Re-exported: an emitter refuses a parameter it has no path for, and the
 #: refusal a caller catches is the same one whichever raised it.
-__all__ = ["UnsupportedOpError", "compile_processor", "unsupported_ops"]
+__all__ = ["UnsupportedOpError", "compile_processor", "op_names", "unsupported_ops"]
+
+
+def op_names(processor) -> list[str]:
+    """The op types a processor is built from, as bare names, in order."""
+    return [emitters.op_name(t) for t in processor.createGroupTransform()]
 
 
 def unsupported_ops(processor) -> list[str]:

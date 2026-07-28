@@ -13,14 +13,20 @@ import pytest
 
 from ocio2onnx import emitters
 from ocio2onnx.addressing import (
-    IMAGE_SHAPE,
     METADATA_PREFIX,
     enumerate_transforms,
-    op_names,
     resolve_colorspaces,
 )
-from ocio2onnx.builder import INPUT, IR_VERSION, OPSET, OUTPUT, PRECISION, GraphBuilder
-from ocio2onnx.compiler import UnsupportedOpError, compile_processor
+from ocio2onnx.builder import (
+    IMAGE_SHAPE,
+    INPUT,
+    IR_VERSION,
+    OPSET,
+    OUTPUT,
+    PRECISION,
+    GraphBuilder,
+)
+from ocio2onnx.compiler import UnsupportedOpError, compile_processor, op_names
 from ocio2onnx.oracle import compare, cpu_reference, lattice, run_graph, verify
 
 PAIR = ("ACEScg", "ACES2065-1")

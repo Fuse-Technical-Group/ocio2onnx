@@ -9,7 +9,8 @@ being closed-form, or an emitter that stopped emitting, moves the count.
 
 import pytest
 
-from ocio2onnx.addressing import enumerate_transforms, op_names
+from ocio2onnx.addressing import enumerate_transforms
+from ocio2onnx.compiler import op_names
 
 #: The six ops this workstream emits (§spec:op-coverage).
 CLOSED_FORM_OPS = frozenset(

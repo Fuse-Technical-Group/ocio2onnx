@@ -27,14 +27,6 @@ FLOATING_CONFIG = "ocio://default"
 #: The pinned config leaves ``ROLE_REFERENCE`` empty.
 FALLBACK_REFERENCE = "ACES2065-1"
 
-#: The emitted graph carries three channels; alpha bypasses it rather than
-#: flowing through identity arithmetic (§spec:emitted-graph).
-CHANNELS = 3
-
-#: The graph's interface: channels-first, batch and spatial dimensions free,
-#: so one graph serves every resolution (§spec:emitted-graph).
-IMAGE_SHAPE = ("N", CHANNELS, "H", "W")
-
 #: Namespace for the keys stamped onto an emitted model's ``metadata_props``.
 METADATA_PREFIX = "ocio2onnx."
 
@@ -148,14 +140,6 @@ def resolve_display_view(
         config_uri=uri,
         endpoints=f"{src} -> {display} / {view}",
     )
-
-
-def op_names(processor: OCIO.Processor) -> list[str]:
-    """The op types a processor is built from, as bare names."""
-    return [
-        type(t).__name__.removesuffix("Transform")
-        for t in processor.createGroupTransform()
-    ]
 
 
 def enumerate_transforms(

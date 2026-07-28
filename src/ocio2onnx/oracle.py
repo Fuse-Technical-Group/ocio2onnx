@@ -17,8 +17,8 @@ import onnxruntime as ort
 import PyOpenColorIO as OCIO
 
 from ocio2onnx import emitters
-from ocio2onnx.addressing import CHANNELS, Resolved
-from ocio2onnx.builder import INPUT
+from ocio2onnx.addressing import Resolved
+from ocio2onnx.builder import CHANNELS, INPUT
 from ocio2onnx.compiler import compile_processor
 
 #: OCIO's default CPU optimization includes ``OPTIMIZATION_FAST_LOG_EXP_POW``,

@@ -26,6 +26,8 @@ PAIRS = (MIRROR_FORWARD, MIRROR_INVERSE, PASS_THRU_FORWARD, PASS_THRU_INVERSE)
 
 STYLES = (OCIO.NEGATIVE_MIRROR, OCIO.NEGATIVE_PASS_THRU)
 
+EXPONENT = "ExponentTransform"
+
 
 def exponent_transform(value, *, style=OCIO.NEGATIVE_MIRROR, inverse=False):
     """A bare ``ExponentTransform`` at one gamma."""
@@ -37,20 +39,8 @@ def exponent_transform(value, *, style=OCIO.NEGATIVE_MIRROR, inverse=False):
     return transform
 
 
-def exponent_op(config, src, dst):
-    """The ``Exponent`` op inside one config transform."""
-    processor = config.getProcessor(src, dst)
-    ops = [
-        t
-        for t in processor.createGroupTransform()
-        if type(t).__name__ == "ExponentTransform"
-    ]
-    assert len(ops) == 1
-    return ops[0]
-
-
 def test_the_registry_carries_exponent():
-    assert "ExponentTransform" in emitters.REGISTRY
+    assert EXPONENT in emitters.REGISTRY
 
 
 @pytest.mark.parametrize("pair", PAIRS)
@@ -69,8 +59,9 @@ def test_a_config_transform_carrying_exponent_verifies(pair, config, config_uri)
         (PASS_THRU_INVERSE, "NEGATIVE_PASS_THRU"),
     ),
 )
-def test_the_pairs_under_test_carry_the_styles_they_claim(pair, style, config):
-    assert str(exponent_op(config, *pair).getNegativeStyle()).endswith(style)
+def test_the_pairs_under_test_carry_the_styles_they_claim(pair, style, op_in):
+    op = op_in(EXPONENT, *pair)
+    assert str(op.getNegativeStyle()).endswith(style)
 
 
 @pytest.mark.parametrize("style", STYLES)

@@ -17,7 +17,8 @@ import numpy as np
 import pytest
 
 from ocio2onnx import emitters
-from ocio2onnx.addressing import CHANNELS, enumerate_transforms, resolve_colorspaces
+from ocio2onnx.addressing import resolve_colorspaces
+from ocio2onnx.builder import CHANNELS
 from ocio2onnx.oracle import lattice, run_graph, verify
 
 #: A curve whose linear slope the config leaves unset, and one it declares.
@@ -33,20 +34,7 @@ PAIRS = (
 )
 
 
-def log_camera_op(config, src, dst):
-    """The ``LogCamera`` op inside one config transform."""
-    ops = [
-        t
-        for t in config.getProcessor(src, dst).createGroupTransform()
-        if type(t).__name__ == "LogCameraTransform"
-    ]
-    assert len(ops) == 1
-    return ops[0]
-
-
-def row(*values):
-    """A lattice-shaped sample carrying ``values`` in every channel."""
-    return np.array([[[list(values)]] * 3], dtype=np.float32)
+LOG_CAMERA = "LogCameraTransform"
 
 
 def declares_linear_slope(transform):
@@ -56,17 +44,12 @@ def declares_linear_slope(transform):
 
 
 def test_the_registry_carries_log_camera():
-    assert "LogCameraTransform" in emitters.REGISTRY
+    assert LOG_CAMERA in emitters.REGISTRY
 
 
-def test_the_pinned_config_carries_both_declared_and_unset_linear_slopes(config):
+def test_the_pinned_config_carries_both_declared_and_unset_linear_slopes(config_ops):
     """Both paths are exercised by real data, so neither is untested code."""
-    states = [
-        declares_linear_slope(transform)
-        for _, processor in enumerate_transforms(config)
-        for transform in processor.createGroupTransform()
-        if type(transform).__name__ == "LogCameraTransform"
-    ]
+    states = [declares_linear_slope(transform) for transform in config_ops(LOG_CAMERA)]
     assert states.count(False) == 14
     assert states.count(True) == 10
 
@@ -78,41 +61,38 @@ def test_a_config_transform_carrying_log_camera_verifies(pair, config, config_ur
     assert result.compared > 0
 
 
-def test_every_log_camera_in_the_pinned_config_verifies(config, check_transform):
-    failures = []
-    for label, processor in enumerate_transforms(config):
-        for transform in processor.createGroupTransform():
-            if type(transform).__name__ != "LogCameraTransform":
-                continue
-            result = check_transform(transform)
-            if not result.ok:
-                failures.append(f"{label}: {result}")
+def test_every_log_camera_in_the_pinned_config_verifies(config_ops, check_transform):
+    failures = [
+        str(result)
+        for transform in config_ops(LOG_CAMERA)
+        if not (result := check_transform(transform)).ok
+    ]
     assert not failures, "\n".join(failures)
 
 
-def test_the_pairs_under_test_are_the_two_linear_slope_cases(config):
-    assert not declares_linear_slope(log_camera_op(config, DERIVED, REFERENCE))
-    assert declares_linear_slope(log_camera_op(config, DECLARED, REFERENCE))
+def test_the_pairs_under_test_are_the_two_linear_slope_cases(op_in):
+    assert not declares_linear_slope(op_in(LOG_CAMERA, DERIVED, REFERENCE))
+    assert declares_linear_slope(op_in(LOG_CAMERA, DECLARED, REFERENCE))
 
 
-def test_a_declared_linear_slope_is_used_as_given(config):
-    transform = log_camera_op(config, DECLARED, REFERENCE)
+def test_a_declared_linear_slope_is_used_as_given(op_in):
+    transform = op_in(LOG_CAMERA, DECLARED, REFERENCE)
     declared = [float(v) for v in transform.getLinearSlopeValue()][:CHANNELS]
     curve = emitters.camera_curve(transform)
     assert curve.linear_slope == pytest.approx(declared, rel=1e-12)
 
 
-def test_an_unset_linear_slope_is_derived_rather_than_taken_as_nan(config):
-    transform = log_camera_op(config, DERIVED, REFERENCE)
+def test_an_unset_linear_slope_is_derived_rather_than_taken_as_nan(op_in):
+    transform = op_in(LOG_CAMERA, DERIVED, REFERENCE)
     curve = emitters.camera_curve(transform)
     assert all(math.isfinite(value) for value in curve.linear_slope)
     assert all(value != 0.0 for value in curve.linear_slope)
 
 
-def test_the_derived_linear_slope_makes_the_break_continuous_in_slope(config):
+def test_the_derived_linear_slope_makes_the_break_continuous_in_slope(op_in):
     """C1 is what the derivation is for: the linear segment leaves the break at
     the rate the curve arrives at it."""
-    transform = log_camera_op(config, DERIVED, REFERENCE)
+    transform = op_in(LOG_CAMERA, DERIVED, REFERENCE)
     curve = emitters.camera_curve(transform)
     ln_base = math.log(curve.base)
 
@@ -131,30 +111,32 @@ def test_the_derived_linear_slope_makes_the_break_continuous_in_slope(config):
 
 
 @pytest.mark.parametrize("name", (DERIVED, DECLARED))
-def test_the_break_is_continuous_in_value(config, name):
+def test_the_break_is_continuous_in_value(op_in, name):
     """The linear segment meets the curve at the break rather than stepping."""
-    curve = emitters.camera_curve(log_camera_op(config, name, REFERENCE))
+    curve = emitters.camera_curve(op_in(LOG_CAMERA, name, REFERENCE))
     for i in range(CHANNELS):
         linear = curve.linear_slope[i] * curve.lin_break[i] + curve.linear_offset[i]
         assert linear == pytest.approx(curve.log_break[i], rel=1e-9)
 
 
-def test_the_forward_breakpoints_are_the_linear_side_break(config):
-    transform = log_camera_op(config, REFERENCE, DERIVED)
+def test_the_forward_breakpoints_are_the_linear_side_break(op_in):
+    transform = op_in(LOG_CAMERA, REFERENCE, DERIVED)
     curve = emitters.camera_curve(transform)
     assert emitters.breakpoints(transform) == curve.lin_break
 
 
-def test_the_inverse_breakpoints_are_the_log_side_break(config):
+def test_the_inverse_breakpoints_are_the_log_side_break(op_in):
     """An inverse op's break lies in the encoded domain, not the linear one."""
-    transform = log_camera_op(config, DERIVED, REFERENCE)
+    transform = op_in(LOG_CAMERA, DERIVED, REFERENCE)
     curve = emitters.camera_curve(transform)
     assert emitters.breakpoints(transform) == curve.log_break
     assert curve.log_break[0] != pytest.approx(curve.lin_break[0])
 
 
-def test_the_forward_break_is_where_the_branch_switches(config, compile_bare):
-    transform = log_camera_op(config, REFERENCE, DERIVED)
+def test_the_forward_break_is_where_the_branch_switches(
+    config, compile_bare, row, op_in
+):
+    transform = op_in(LOG_CAMERA, REFERENCE, DERIVED)
     curve = emitters.camera_curve(transform)
     delta = 0.05
     below, above = curve.lin_break[0] - delta, curve.lin_break[0] + delta
@@ -178,8 +160,10 @@ def test_the_forward_break_is_where_the_branch_switches(config, compile_bare):
     assert got[1] != pytest.approx(linear(above), abs=1e-5)
 
 
-def test_the_inverse_break_is_where_the_branch_switches(config, compile_bare):
-    transform = log_camera_op(config, DERIVED, REFERENCE)
+def test_the_inverse_break_is_where_the_branch_switches(
+    config, compile_bare, row, op_in
+):
+    transform = op_in(LOG_CAMERA, DERIVED, REFERENCE)
     curve = emitters.camera_curve(transform)
     delta = 0.05
     below, above = curve.log_break[0] - delta, curve.log_break[0] + delta

@@ -20,14 +20,12 @@ from ocio2onnx.addressing import (
     DEFAULT_CONFIG,
     METADATA_PREFIX,
     Resolved,
-    op_names,
     reference_space,
     resolve_colorspaces,
     resolve_display_view,
 )
 from ocio2onnx.builder import PRECISION
-from ocio2onnx.compiler import compile_processor
-from ocio2onnx.oracle import compare, cpu_reference, lattice, run_graph
+from ocio2onnx.compiler import compile_processor, op_names
 from ocio2onnx.oracle import verify as oracle_verify
 
 #: The pair §spec:verification names: a camera log
@@ -41,14 +39,6 @@ DISPLAY_VIEW = ("sRGB - Display", "Un-tone-mapped")
 
 def metadata(model):
     return {entry.key: entry.value for entry in model.metadata_props}
-
-
-def verified(processor, model):
-    """Hold a model handed back by the public API against the oracle."""
-    samples = lattice(processor)
-    return compare(
-        cpu_reference(processor, samples), run_graph(model, samples), samples
-    )
 
 
 def test_the_package_exports_what_it_says_it_does():
@@ -72,10 +62,10 @@ def test_the_re_exports_are_the_originals():
     assert issubclass(ocio2onnx.UnsupportedOpError, NotImplementedError)
 
 
-def test_compile_colorspaces_returns_a_model_that_verifies(config):
+def test_compile_colorspaces_returns_a_model_that_verifies(config, check):
     model = compile_colorspaces(*PAIR)
     assert isinstance(model, onnx.ModelProto)
-    result = verified(config.getProcessor(*PAIR), model)
+    result = check(config.getProcessor(*PAIR), model=model)
     assert result.ok, str(result)
     assert result.compared > 0
 
@@ -87,12 +77,12 @@ def test_compile_colorspaces_records_its_provenance_and_precision():
     assert recorded[f"{METADATA_PREFIX}precision"] == PRECISION == "float32"
 
 
-def test_compile_display_view_returns_a_model_that_verifies(config):
+def test_compile_display_view_returns_a_model_that_verifies(config, check):
     model = compile_display_view(*DISPLAY_VIEW)
     processor = resolve_display_view(
         config, *DISPLAY_VIEW, uri=DEFAULT_CONFIG
     ).processor
-    result = verified(processor, model)
+    result = check(processor, model=model)
     assert result.ok, str(result)
     assert result.compared > 0
 
@@ -130,14 +120,14 @@ def test_an_unimplemented_op_is_refused_rather_than_approximated():
         compile_display_view("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
 
 
-def test_a_view_with_no_ops_compiles_to_a_pass_through(config):
+def test_a_view_with_no_ops_compiles_to_a_pass_through(config, check):
     """``Raw`` resolves to an empty op list, which the builder closes over with
     an Identity rather than failing to make a graph."""
     processor = resolve_display_view(
         config, "sRGB - Display", "Raw", uri=DEFAULT_CONFIG
     ).processor
     assert op_names(processor) == []
-    result = verified(processor, compile_display_view("sRGB - Display", "Raw"))
+    result = check(processor, model=compile_display_view("sRGB - Display", "Raw"))
     assert result.ok, str(result)
 
 

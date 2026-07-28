@@ -8,6 +8,8 @@ import pytest
 
 from ocio2onnx.builder import (
     CHANNEL_SHAPE,
+    CHANNELS,
+    IMAGE_SHAPE,
     INPUT,
     OUTPUT,
     SCALAR_SHAPE,
@@ -16,6 +18,11 @@ from ocio2onnx.builder import (
 from ocio2onnx.oracle import run_graph
 
 SAMPLES = np.array([[[[-2.0, 0.5]], [[0.25, 4.0]], [[1.0, -1.0]]]], dtype=np.float32)
+
+
+def test_the_graph_interface_is_three_channels_with_spatial_dims_free():
+    assert CHANNELS == 3
+    assert IMAGE_SHAPE == ("N", CHANNELS, "H", "W")
 
 
 def test_names_are_unique_per_hint():

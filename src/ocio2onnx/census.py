@@ -37,10 +37,9 @@ from ocio2onnx.addressing import (
     DEFAULT_CONFIG,
     enumerate_transforms,
     load_config,
-    op_names,
     reference_space,
 )
-from ocio2onnx.compiler import unsupported_ops
+from ocio2onnx.compiler import op_names, unsupported_ops
 from ocio2onnx.emitters import supported_ops
 
 #: How many refusals the report lists before summarising the rest.

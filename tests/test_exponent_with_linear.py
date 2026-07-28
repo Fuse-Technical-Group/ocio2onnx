@@ -13,7 +13,8 @@ import PyOpenColorIO as OCIO
 import pytest
 
 from ocio2onnx import emitters
-from ocio2onnx.addressing import CHANNELS, enumerate_transforms, resolve_colorspaces
+from ocio2onnx.addressing import resolve_colorspaces
+from ocio2onnx.builder import CHANNELS
 from ocio2onnx.compiler import UnsupportedOpError
 from ocio2onnx.oracle import lattice, run_graph, verify
 
@@ -33,6 +34,8 @@ STYLES = (OCIO.NEGATIVE_MIRROR, OCIO.NEGATIVE_LINEAR)
 SRGB = (2.4, 0.055)
 REC709 = (2.2222222222222223, 0.099)
 
+MONCURVE = "ExponentWithLinearTransform"
+
 
 def moncurve_transform(gamma, offset, *, style=OCIO.NEGATIVE_MIRROR, inverse=False):
     """A bare ``ExponentWithLinearTransform``."""
@@ -45,24 +48,8 @@ def moncurve_transform(gamma, offset, *, style=OCIO.NEGATIVE_MIRROR, inverse=Fal
     return transform
 
 
-def row(*values):
-    """A lattice-shaped sample carrying ``values`` in every channel."""
-    return np.array([[[list(values)]] * 3], dtype=np.float32)
-
-
-def moncurve_op(config, src, dst):
-    """The ``ExponentWithLinear`` op inside one config transform."""
-    ops = [
-        t
-        for t in config.getProcessor(src, dst).createGroupTransform()
-        if type(t).__name__ == "ExponentWithLinearTransform"
-    ]
-    assert len(ops) == 1
-    return ops[0]
-
-
 def test_the_registry_carries_exponent_with_linear():
-    assert "ExponentWithLinearTransform" in emitters.REGISTRY
+    assert MONCURVE in emitters.REGISTRY
 
 
 @pytest.mark.parametrize("pair", PAIRS)
@@ -81,8 +68,9 @@ def test_a_config_transform_carrying_the_op_verifies(pair, config, config_uri):
         (LINEAR_INVERSE, "NEGATIVE_LINEAR"),
     ),
 )
-def test_the_pairs_under_test_carry_the_styles_they_claim(pair, style, config):
-    assert str(moncurve_op(config, *pair).getNegativeStyle()).endswith(style)
+def test_the_pairs_under_test_carry_the_styles_they_claim(pair, style, op_in):
+    op = op_in(MONCURVE, *pair)
+    assert str(op.getNegativeStyle()).endswith(style)
 
 
 @pytest.mark.parametrize("parameters", (SRGB, REC709))
@@ -141,7 +129,7 @@ def test_the_inverse_breakpoints_are_zero_and_the_output_break(style):
     assert curve.y_break != pytest.approx(curve.x_break)
 
 
-def test_the_forward_break_is_where_the_branch_switches(config, compile_bare):
+def test_the_forward_break_is_where_the_branch_switches(config, compile_bare, row):
     """Either side of the break lands on a different expression: linear below,
     power above. Read onto the wrong side, each is visibly wrong."""
     curve = emitters.moncurve(*SRGB)
@@ -161,7 +149,7 @@ def test_the_forward_break_is_where_the_branch_switches(config, compile_bare):
     assert got[1] != pytest.approx(curve.slope * above, abs=1e-6)
 
 
-def test_the_inverse_break_is_where_the_branch_switches(config, compile_bare):
+def test_the_inverse_break_is_where_the_branch_switches(config, compile_bare, row):
     """The inverse break is two orders of magnitude below the forward one, so
     reading the wrong one onto the comparison misplaces the join entirely."""
     curve = emitters.moncurve(*SRGB)
@@ -180,7 +168,7 @@ def test_the_inverse_break_is_where_the_branch_switches(config, compile_bare):
     assert got[1] != pytest.approx(above / curve.slope, abs=1e-6)
 
 
-def test_mirror_reflects_the_whole_curve_through_the_origin(config, compile_bare):
+def test_mirror_reflects_the_whole_curve_through_the_origin(config, compile_bare, row):
     transform = moncurve_transform(*SRGB, style=OCIO.NEGATIVE_MIRROR)
     got = run_graph(
         compile_bare(config.getProcessor(transform)), row(-0.5, 0.5)
@@ -188,7 +176,7 @@ def test_mirror_reflects_the_whole_curve_through_the_origin(config, compile_bare
     assert got[0] == pytest.approx(-got[1], abs=1e-6)
 
 
-def test_linear_extends_the_segment_below_zero(config, compile_bare):
+def test_linear_extends_the_segment_below_zero(config, compile_bare, row):
     """``NEGATIVE_LINEAR`` runs the linear segment on through the origin, so
     the negative half is a straight line rather than a reflected curve."""
     curve = emitters.moncurve(*SRGB)
@@ -211,16 +199,14 @@ def test_the_graph_is_finite_across_the_lattice(style, inverse, config, compile_
     assert np.isfinite(got).all()
 
 
-def test_no_op_in_the_pinned_config_has_a_zero_offset(config):
+def test_no_op_in_the_pinned_config_has_a_zero_offset(config_ops):
     """A zero offset degenerates: the break divides by ``gamma - 1`` and the
     linear segment vanishes. It does not occur here, which is why the emitter
     refuses it rather than guessing at it."""
     offsets = [
         value
-        for _, processor in enumerate_transforms(config)
-        for transform in processor.createGroupTransform()
-        if type(transform).__name__ == "ExponentWithLinearTransform"
-        for value in list(transform.getOffset())[:3]
+        for transform in config_ops(MONCURVE)
+        for value in list(transform.getOffset())[:CHANNELS]
     ]
     assert offsets
     assert all(value != 0.0 for value in offsets)

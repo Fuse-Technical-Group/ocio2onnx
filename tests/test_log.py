@@ -16,10 +16,11 @@ import PyOpenColorIO as OCIO
 import pytest
 
 from ocio2onnx import emitters
-from ocio2onnx.addressing import enumerate_transforms
 from ocio2onnx.oracle import cpu_reference, run_graph
 
 BASES = (2.0, math.e, 10.0)
+
+LOG = "LogTransform"
 
 
 def log_transform(base, *, inverse=False):
@@ -31,24 +32,14 @@ def log_transform(base, *, inverse=False):
     return transform
 
 
-def row(*values):
-    """A lattice-shaped sample carrying ``values`` in every channel."""
-    return np.array([[[list(values)]] * 3], dtype=np.float32)
-
-
 @pytest.fixture(scope="module")
-def config_log_ops(config):
+def config_log_ops(config_ops):
     """Every ``Log`` op the pinned config carries, both directions."""
-    return [
-        transform
-        for _, processor in enumerate_transforms(config)
-        for transform in processor.createGroupTransform()
-        if type(transform).__name__ == "LogTransform"
-    ]
+    return config_ops(LOG)
 
 
 def test_the_registry_carries_log():
-    assert "LogTransform" in emitters.REGISTRY
+    assert LOG in emitters.REGISTRY
 
 
 def test_no_closed_form_transform_carries_log(config_log_ops):
@@ -73,19 +64,19 @@ def test_a_bare_log_verifies(base, inverse, check_transform):
     assert result.ok, str(result)
 
 
-def test_the_forward_direction_is_the_logarithm_in_its_base(config, compile_bare):
+def test_the_forward_direction_is_the_logarithm_in_its_base(config, compile_bare, row):
     transform = log_transform(10.0)
     got = run_graph(compile_bare(config.getProcessor(transform)), row(1.0, 10.0, 100.0))
     assert got.ravel()[:3] == pytest.approx([0.0, 1.0, 2.0], abs=1e-5)
 
 
-def test_the_inverse_direction_raises_the_base(config, compile_bare):
+def test_the_inverse_direction_raises_the_base(config, compile_bare, row):
     transform = log_transform(10.0, inverse=True)
     got = run_graph(compile_bare(config.getProcessor(transform)), row(0.0, 1.0, 2.0))
     assert got.ravel()[:3] == pytest.approx([1.0, 10.0, 100.0], rel=1e-5)
 
 
-def test_the_floor_matches_the_one_ocio_clamps_to(config, compile_bare):
+def test_the_floor_matches_the_one_ocio_clamps_to(config, compile_bare, row):
     """A floor of 1e-30 would read as nearly 8 units of error at the first
     non-positive input; OCIO clamps to the smallest normal float32."""
     processor = config.getProcessor(log_transform(10.0))
@@ -107,7 +98,7 @@ def test_the_inverse_direction_declares_no_breakpoint():
     assert emitters.breakpoints(log_transform(10.0, inverse=True)) == []
 
 
-def test_zero_is_where_the_forward_branch_switches(config, compile_bare):
+def test_zero_is_where_the_forward_branch_switches(config, compile_bare, row):
     """Below the breakpoint the clamp holds the output at the floor; above it
     the output tracks the input."""
     got = run_graph(

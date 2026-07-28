@@ -13,7 +13,7 @@ import PyOpenColorIO as OCIO
 import pytest
 
 from ocio2onnx import emitters
-from ocio2onnx.addressing import enumerate_transforms, op_names
+from ocio2onnx.compiler import op_names
 from ocio2onnx.oracle import cpu_reference, lattice, run_graph
 
 #: Bound sets measured across the pinned config: an identity clamp, the two
@@ -22,6 +22,8 @@ IDENTITY_BOUNDS = (0.0, 1.0, 0.0, 1.0)
 SCALING_BOUNDS = (-0.36, 1.5, 0.0, 1.0)
 INVERSE_SCALING_BOUNDS = (0.0, 1.0, -0.36, 1.5)
 HALF_OPEN_BOUNDS = (0.0, math.nan, 0.0, math.nan)
+
+RANGE = "RangeTransform"
 
 BOUND_SETS = (
     IDENTITY_BOUNDS,
@@ -49,31 +51,23 @@ def range_transform(bounds, *, inverse=False):
     return transform
 
 
-def row(*values):
-    """A lattice-shaped sample carrying ``values`` in every channel."""
-    return np.array([[[list(values)]] * 3], dtype=np.float32)
-
-
 @pytest.fixture(scope="module")
-def config_range_ops(config):
+def config_range_ops(config_ops):
     """Every distinct ``Range`` op the pinned config carries."""
     seen = {}
-    for _, processor in enumerate_transforms(config):
-        for transform in processor.createGroupTransform():
-            if type(transform).__name__ != "RangeTransform":
-                continue
-            key = (
-                transform.getMinInValue(),
-                transform.getMaxInValue(),
-                transform.getMinOutValue(),
-                transform.getMaxOutValue(),
-            )
-            seen.setdefault(repr(key), transform)
+    for transform in config_ops(RANGE):
+        key = (
+            transform.getMinInValue(),
+            transform.getMaxInValue(),
+            transform.getMinOutValue(),
+            transform.getMaxOutValue(),
+        )
+        seen.setdefault(repr(key), transform)
     return list(seen.values())
 
 
 def test_the_registry_carries_range():
-    assert "RangeTransform" in emitters.REGISTRY
+    assert RANGE in emitters.REGISTRY
 
 
 def test_range_arrives_forward_and_clamping_throughout_the_config(config_range_ops):
@@ -135,7 +129,9 @@ def test_an_unset_bound_declares_no_breakpoint():
     assert emitters.breakpoints(range_transform(HALF_OPEN_BOUNDS)) == [0.0]
 
 
-def test_the_declared_breakpoints_are_where_the_clamp_engages(config, compile_bare):
+def test_the_declared_breakpoints_are_where_the_clamp_engages(
+    config, compile_bare, row
+):
     """Either side of a bound lands on a different branch: inside the interval
     the graph is affine, outside it is constant."""
     transform = range_transform(SCALING_BOUNDS)
@@ -165,7 +161,7 @@ def test_a_scaling_range_emits_the_affine(config, compile_bare):
     ]
 
 
-def test_a_half_open_range_clamps_only_below(config, compile_bare):
+def test_a_half_open_range_clamps_only_below(config, compile_bare, row):
     processor = config.getProcessor(range_transform(HALF_OPEN_BOUNDS))
     samples = row(-1.0, 0.5, 1e6)
     want = cpu_reference(processor, samples)

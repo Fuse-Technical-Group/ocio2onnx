@@ -14,7 +14,15 @@ import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
 
-from ocio2onnx.addressing import CHANNELS, IMAGE_SHAPE, METADATA_PREFIX
+from ocio2onnx.addressing import METADATA_PREFIX
+
+#: The emitted graph carries three channels; alpha bypasses it rather than
+#: flowing through identity arithmetic (§spec:emitted-graph).
+CHANNELS = 3
+
+#: The graph's interface: channels-first, batch and spatial dimensions free,
+#: so one graph serves every resolution (§spec:emitted-graph).
+IMAGE_SHAPE = ("N", CHANNELS, "H", "W")
 
 #: The graph's input and output tensor names.
 INPUT = "input"

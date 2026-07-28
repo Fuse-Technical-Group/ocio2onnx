@@ -7,17 +7,15 @@ import pytest
 
 import ocio2onnx
 from ocio2onnx.addressing import (
-    CHANNELS,
     DEFAULT_CONFIG,
-    IMAGE_SHAPE,
     AddressError,
     enumerate_transforms,
     load_config,
-    op_names,
     reference_space,
     resolve_colorspaces,
     resolve_display_view,
 )
+from ocio2onnx.compiler import op_names
 
 PINNED_NAME = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
 DISPLAY = "sRGB - Display"
@@ -66,13 +64,6 @@ def test_resolve_colorspaces_returns_a_processor_with_ops(config, config_uri):
     assert resolved.config_name == PINNED_NAME
     assert resolved.config_uri == config_uri
     assert resolved.endpoints == "Log3G10 REDWideGamutRGB -> ACES2065-1"
-
-
-def test_op_names_strips_the_transform_suffix(config, config_uri):
-    resolved = resolve_colorspaces(
-        config, "Log3G10 REDWideGamutRGB", "ACES2065-1", uri=config_uri
-    )
-    assert op_names(resolved.processor) == ["LogCamera", "Matrix"]
 
 
 def test_unknown_source_names_the_name_and_the_config(config, config_uri):
@@ -164,8 +155,3 @@ def test_enumerate_transforms_yields_the_measured_census(config):
     labels = [label for label, _ in enumerate_transforms(config)]
     assert len(labels) == 159
     assert len(set(labels)) == 159
-
-
-def test_the_graph_interface_is_three_channels_with_spatial_dims_free():
-    assert CHANNELS == 3
-    assert IMAGE_SHAPE == ("N", CHANNELS, "H", "W")

@@ -323,12 +323,40 @@ def test_cpu_reference_clears_ocios_fast_math_path(config):
     assert not np.array_equal(exact[finite], fast[finite])
 
 
-def test_fast_log_exp_pow_is_the_only_optimization_cleared():
+def test_only_the_two_documented_optimizations_are_cleared():
+    """Which flags are set is a correctness decision rather than a tuning knob
+    (§spec:verification), so the set is pinned rather than merely chosen:
+    ``FAST_LOG_EXP_POW`` for accuracy and ``SIMPLIFY_OPS`` for liveness, both
+    argued at ``addressing.OPTIMIZATION_FLAGS``. A third would arrive here."""
     assert (
         OCIO.OPTIMIZATION_DEFAULT.value ^ OPTIMIZATION_FLAGS.value
         == OCIO.OPTIMIZATION_FAST_LOG_EXP_POW.value
+        | OCIO.OPTIMIZATION_SIMPLIFY_OPS.value
     )
     assert OPTIMIZATION_FLAGS.value & OCIO.OPTIMIZATION_LUT_INV_FAST.value
+
+
+def test_clearing_simplify_ops_costs_the_pinned_config_nothing(config):
+    """``SIMPLIFY_OPS`` is cleared to keep a graded op emittable
+    (§spec:dynamic-properties), and it is affordable because it only ever folds
+    a graded op: across the pinned config, which carries none, it changes no
+    op count at all. A future config or OCIO release where it does start
+    trading graph size for liveness should be argued rather than absorbed."""
+    simplified = OCIO.OptimizationFlags(
+        OPTIMIZATION_FLAGS.value | OCIO.OPTIMIZATION_SIMPLIFY_OPS.value
+    )
+    spaces = list(config.getColorSpaceNames())
+    pairs = [(src, dst) for src in spaces[::7] for dst in spaces[::5] if src != dst]
+    assert len(pairs) > 50
+
+    for src, dst in pairs:
+        processor = config.getProcessor(src, dst)
+
+        def ops(flags, processor=processor):
+            optimized = processor.getOptimizedProcessor(flags)
+            return len(list(optimized.createGroupTransform()))
+
+        assert ops(OPTIMIZATION_FLAGS) == ops(simplified), f"{src} -> {dst}"
 
 
 #: A pixel whose channels disagree, carrying 65504 in the first. OCIO's exact

@@ -77,6 +77,38 @@ def test_the_registry_carries_exposure_contrast():
     assert EXPOSURE_CONTRAST in emitters.REGISTRY
 
 
+#: An op set to its own identity: no exposure, no contrast, no gamma.
+IDENTITY = {"Exposure": 0.0, "Contrast": 1.0, "Gamma": 1.0}
+
+
+@pytest.mark.parametrize("style", STYLES)
+def test_an_identity_grade_stays_live_only_where_ocio_declares_it(
+    style, config, compile_bare
+):
+    """Where OCIO's dynamic flag still decides, and the only place it does
+    (§spec:dynamic-properties).
+
+    A grade off its identity proves its own op exists, so the compiler emits
+    the knobs whatever OCIO declares. A grade *at* its identity is not
+    distinguishable from an absent op, and OCIO removes it — so the config
+    author's declaration is the only signal left, and OCIO keeps a declared-
+    dynamic op through that removal. Catching the undeclared case would mean
+    clearing ``OPTIMIZATION_IDENTITY`` and carrying every identity matrix and
+    range in every config into the graph, which is a wider price than the knob
+    is worth.
+    """
+    identity = exposure_contrast(style, **IDENTITY)
+    assert parameters(compile_bare(config.getProcessor(identity))) == {}
+
+    declared = exposure_contrast(style, **IDENTITY)
+    declared.makeExposureDynamic()
+    assert list(parameters(compile_bare(config.getProcessor(declared)))) == [
+        "EXPOSURE",
+        "CONTRAST",
+        "GAMMA",
+    ]
+
+
 @pytest.mark.parametrize("style", STYLES)
 @pytest.mark.parametrize("inverse", (False, True))
 def test_the_graph_declares_one_input_per_scalar_property(

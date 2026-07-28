@@ -41,15 +41,16 @@ SATURATION = 1.25
 SLOPE_SWEEP = ([0.0, 0.5, 2.0], [1.0, 1.0, 1.0], [3.0, 0.25, 1.4])
 OFFSET_SWEEP = ([-0.4, 0.0, 0.4], [0.0, 0.0, 0.0], [0.15, -0.15, 0.05])
 
-#: Powers stay positive: the ASC specification bounds them there and OCIO
-#: refuses the rest before a processor is built. The sweep passes through unity
-#: per channel but never on all three at once, which is where OCIO's optimizer
-#: stops running the op
-#: (`test_a_unit_power_is_where_ocios_optimizer_changes_the_transform`).
-POWER_SWEEP = ([0.4, 1.0, 2.5], [1.0, 0.9, 1.1], [2.2, 0.45, 1.6])
-
-#: The power at which OCIO rewrites the op rather than running it.
+#: The power at which OCIO would rewrite the op rather than run it, which is
+#: the identity the ASC power is most often left at
+#: (`test_simplifying_a_unit_power_drops_a_clamp_ocio_calls_lossless`).
 UNIT_POWER = [1.0, 1.0, 1.0]
+
+#: Powers stay positive: the ASC specification bounds them there and OCIO
+#: refuses the rest before a processor is built. The sweep runs through the
+#: identity on all three channels at once, which the compiler reaches because
+#: it clears ``OPTIMIZATION_SIMPLIFY_OPS``.
+POWER_SWEEP = ([0.4, 1.0, 2.5], [1.0, 0.9, 1.1], UNIT_POWER, [2.2, 0.45, 1.6])
 
 #: Saturation from fully desaturated through untouched to well past it.
 SATURATION_SWEEP = (0.0, 0.5, 1.0, 2.4)
@@ -107,8 +108,33 @@ def test_the_graph_declares_one_input_per_cdl_parameter(
 
 @pytest.mark.parametrize("style", STYLES)
 @pytest.mark.parametrize("inverse", (False, True))
+def test_a_primary_grade_keeps_its_knobs(style, inverse, config, compile_bare):
+    """A primary — slope, offset, and saturation at a unit power — is the most
+    common CDL there is, and the one OCIO's optimizer folds into a matrix.
+    Folded, the grade reaches the graph as coefficients and the artifact has no
+    knob to turn, which is the whole of what this section promises
+    (§spec:dynamic-properties). ``OPTIMIZATION_SIMPLIFY_OPS`` is cleared so the
+    op survives to be emitted.
+    """
+    grade = cdl(style, inverse=inverse, Power=UNIT_POWER)
+    assert list(parameters(compile_bare(config.getProcessor(grade)))) == INPUTS
+
+
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("inverse", (False, True))
 def test_a_bare_cdl_verifies_at_its_defaults(style, inverse, check_transform):
     result = check_transform(cdl(style, inverse=inverse))
+    assert result.ok, str(result)
+    assert result.compared > 0
+
+
+@pytest.mark.parametrize("style", STYLES)
+@pytest.mark.parametrize("inverse", (False, True))
+def test_a_primary_grade_verifies_against_the_oracle(style, inverse, check_transform):
+    """The grade above is not only live but right: an op the optimizer would
+    have rewritten still agrees with OCIO, which is what says clearing the flag
+    changed which ops are emitted rather than what they compute."""
+    result = check_transform(cdl(style, inverse=inverse, Power=UNIT_POWER))
     assert result.ok, str(result)
     assert result.compared > 0
 
@@ -164,16 +190,22 @@ def test_a_collapsed_channel_stays_invertible(config, check, compile_bare):
     assert result.compared > 0
 
 
-def test_a_unit_power_is_where_ocios_optimizer_changes_the_transform(
+def test_simplifying_a_unit_power_drops_a_clamp_ocio_calls_lossless(
     config, compile_bare
 ):
-    """Where the power sweep stops short of the identity, and why.
+    """Why ``OPTIMIZATION_SIMPLIFY_OPS`` is cleared, measured rather than
+    asserted.
 
-    At a unit power OCIO's optimizer replaces the clamping CDL with ``Range``
-    and ``Matrix`` ops that drop its output clamp: the op answers 1 for an
-    input of 1 on a lifted channel and the rewrite answers 1.2875. The graph
-    emits the op, so it agrees with the first. Sweeping through the identity
-    would be measuring the rewrite instead.
+    At a unit power OCIO rewrites the clamping CDL into ``Range`` and ``Matrix``
+    ops that drop the style's output clamp: the op answers 1 for an input of 1
+    on a lifted channel and the rewrite answers 1.2875. OCIO applies that
+    rewrite at ``OPTIMIZATION_LOSSLESS``, so the classification is wrong rather
+    than the trade being deliberate, and the op is the correct reading of the
+    two. The compiler clears the flag and emits the op.
+
+    Pinned so that an OCIO release which stops rewriting, or which starts
+    preserving the clamp, is visible here rather than silently changing what a
+    compiled primary means.
     """
     processor = config.getProcessor(cdl(OCIO.CDL_ASC, inverse=True, Power=UNIT_POWER))
 
@@ -183,9 +215,9 @@ def test_a_unit_power_is_where_ocios_optimizer_changes_the_transform(
         return pixels.ravel()
 
     op = reference(OCIO.OPTIMIZATION_NONE)
-    rewrite = reference(OPTIMIZATION_FLAGS)
     assert op[2] == pytest.approx(1.0, abs=1e-6)
-    assert rewrite[2] == pytest.approx(1.2875, abs=1e-6)
+    assert reference(OCIO.OPTIMIZATION_LOSSLESS)[2] == pytest.approx(1.2875, abs=1e-6)
+    assert reference(OPTIMIZATION_FLAGS)[2] == pytest.approx(1.0, abs=1e-6)
 
     model = compile_bare(config.getProcessor(cdl(OCIO.CDL_ASC, inverse=True)))
     graph = run_graph(

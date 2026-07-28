@@ -725,7 +725,7 @@ def test_a_uniform_lut_widens_the_lattice_at_its_domain_edges(config, op_in):
 
 
 def test_a_nan_input_reads_the_first_slot_rather_than_an_index_no_bound_covers(
-    config, compile_bare, op_in, row
+    config, compile_bare, emitted_ops, op_in, row
 ):
     """The index is cast to int64 and handed to ``Gather``, and
     ``Cast(NaN, INT64)`` is implementation-defined — ``INT64_MIN`` on x86,
@@ -741,14 +741,18 @@ def test_a_nan_input_reads_the_first_slot_rather_than_an_index_no_bound_covers(
     The first slot is where OCIO reads a NaN over a uniform table. Over a half
     domain OCIO reads the NaN's own float16 pattern, slot 32256, which holds
     the same value as slot 0 in every half-domain table in the pinned config.
+
+    The slot is read off the emitted op rather than the one the config reports:
+    OCIO answers an inverse ``Lut1D`` with a forward table of its own, so the
+    two carry different numbers for the same transform.
     """
     for src, dst in (
         (UNIFORM_SPACES[0], REFERENCE),
         HALF_DOMAIN_PAIRS[0],
         INVERSE_PAIRS[0],
     ):
-        lut = op_in(LUT1D, src, dst)
-        processor = config.getProcessor(lut)
+        processor = config.getProcessor(op_in(LUT1D, src, dst))
+        (lut,) = emitted_ops(processor, LUT1D)
         samples = row(np.nan, np.inf, -np.inf)
         got = run_graph(compile_bare(processor), samples)
         assert np.isfinite(got).all(), f"{src} -> {dst} left the table"

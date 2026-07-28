@@ -11,6 +11,7 @@ import pytest
 
 from ocio2onnx.addressing import (
     DEFAULT_CONFIG,
+    OPTIMIZATION_FLAGS,
     Resolved,
     enumerate_transforms,
     load_config,
@@ -35,12 +36,19 @@ def config(config_uri):
 
 @pytest.fixture(scope="session")
 def compile_bare(config_uri):
-    """Compile a processor a test discovered rather than resolved."""
+    """Compile a processor a test discovered rather than resolved.
+
+    Optimized at ``OPTIMIZATION_FLAGS`` first, which is what ``resolve`` hands
+    the compiler. A test that compiled the unoptimized op list would exercise
+    ops no caller reaches and measure them against an oracle that optimizes
+    (``oracle.cpu_reference``) — two different transforms, agreeing only where
+    the optimizer happens to be value-preserving.
+    """
 
     def compile(processor, label="bare"):
         return compile_processor(
             Resolved(
-                processor=processor,
+                processor=processor.getOptimizedProcessor(OPTIMIZATION_FLAGS),
                 config_name="bare",
                 config_uri=config_uri,
                 endpoints=label,
@@ -48,6 +56,25 @@ def compile_bare(config_uri):
         )
 
     return compile
+
+
+@pytest.fixture(scope="session")
+def emitted_ops():
+    """The ops a processor compiles from, which is not the list it reports.
+
+    A test that reads an op's own table or coefficients has to read them off
+    the op the compiler emitted. ``OPTIMIZATION_LUT_INV_FAST`` turns an inverse
+    ``Lut1D`` into a forward one carrying a different table, so the reported
+    transform and the emitted one answer the same pixel from different numbers.
+    """
+
+    def emitted_ops(processor, label=None):
+        transforms = processor.getOptimizedProcessor(
+            OPTIMIZATION_FLAGS
+        ).createGroupTransform()
+        return [t for t in transforms if label is None or op_label(t) == label]
+
+    return emitted_ops
 
 
 @pytest.fixture(scope="session")

@@ -268,6 +268,10 @@ def compare(
     got = np.asarray(got, dtype=np.float64)
     if want.shape != got.shape:
         raise ValueError(f"reference is {want.shape}, graph output is {got.shape}")
+    if samples is not None and np.shape(samples) != want.shape:
+        # Only the two report paths read it, so a mismatch would otherwise
+        # surface as an IndexError on the way to explaining a failure.
+        raise ValueError(f"reference is {want.shape}, samples are {np.shape(samples)}")
 
     want_class = classify(want)
     agree = want_class == classify(got)

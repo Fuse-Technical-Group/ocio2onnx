@@ -180,6 +180,17 @@ def test_a_matching_pair_reports_no_failures():
     assert result.compared == want.size
 
 
+def test_arrays_that_do_not_line_up_are_refused_rather_than_indexed():
+    """``samples`` is read only to explain a failure, so an ill-fitting one
+    would surface as an ``IndexError`` in place of the report it was passed
+    for. Both operands are checked where the comparison starts."""
+    want = np.zeros((1, CHANNELS, 1, 8))
+    with pytest.raises(ValueError, match="graph output is"):
+        compare(want, np.zeros((1, CHANNELS, 1, 4)))
+    with pytest.raises(ValueError, match="samples are"):
+        compare(want, want.copy(), np.zeros(4))
+
+
 def test_a_non_finite_reference_is_matched_by_class_not_dropped():
     """The three non-finite answers are distinct, and a graph returning the one
     the reference returned agrees at that sample (§spec:evidence-floor)."""

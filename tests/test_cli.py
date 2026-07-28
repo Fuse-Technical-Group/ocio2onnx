@@ -203,6 +203,59 @@ def test_an_unemittable_op_refuses_by_name_without_a_traceback(
     assert "Traceback" not in err
 
 
+#: A config whose transform is non-finite over the whole lattice. A NaN
+#: coefficient in a declared matrix is one step from an arbitrary config, and
+#: the graph reproduces it faithfully — so every sample is matched by class and
+#: none is held against the tolerance.
+CONFIG_WITH_A_NON_FINITE_TRANSFORM = """ocio_profile_version: 2
+roles:
+  default: ref
+  reference: ref
+colorspaces:
+  - !<ColorSpace>
+    name: ref
+  - !<ColorSpace>
+    name: nonfinite
+    from_scene_reference: !<MatrixTransform>
+      matrix: [.nan, 0, 0, 0, 0, .nan, 0, 0, 0, 0, .nan, 0, 0, 0, 0, 1]
+"""
+
+
+@pytest.fixture
+def config_with_a_non_finite_transform(tmp_path):
+    path = tmp_path / "nonfinite.ocio"
+    path.write_text(CONFIG_WITH_A_NON_FINITE_TRANSFORM)
+    return str(path)
+
+
+def test_compile_verify_refuses_to_certify_a_graph_on_no_evidence(
+    config_with_a_non_finite_transform, graph, capsys
+):
+    """``--verify`` used to print ``verified: 0 of 0 samples outside
+    tolerance`` over a 1248-sample lattice. A verified graph needs at least one
+    finite sample compared (§spec:evidence-floor)."""
+    code = main(
+        [
+            "compile",
+            "--from",
+            "nonfinite",
+            "--to",
+            "ref",
+            "-o",
+            graph,
+            "--config",
+            config_with_a_non_finite_transform,
+            "--verify",
+        ]
+    )
+    assert code == FAILED
+
+    printed = capsys.readouterr().out
+    assert printed.startswith("FAILED:")
+    assert "no finite sample" in printed
+    assert "verified" not in printed
+
+
 #: A config that parses but names a LUT that is not there. OCIO resolves a
 #: `FileTransform` lazily, at getProcessor rather than at load, so this is the
 #: refusal that escapes if only load_config is guarded.

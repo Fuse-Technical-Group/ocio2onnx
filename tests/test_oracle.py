@@ -180,13 +180,16 @@ def test_a_matching_pair_reports_no_failures():
     assert result.compared == want.size
 
 
-def test_non_finite_reference_values_are_ignored_and_counted():
-    want = np.array([[[[1.0, np.inf, np.nan]]]])
-    got = np.array([[[[1.0, np.inf, np.nan]]]])
-    result = compare(want, got)
+def test_a_non_finite_reference_is_matched_by_class_not_dropped():
+    """The three non-finite answers are distinct, and a graph returning the one
+    the reference returned agrees at that sample (§spec:evidence-floor)."""
+    want = np.array([[[[1.0, np.inf, -np.inf, np.nan]]]])
+    result = compare(want, want.copy())
     assert result.ok
-    assert result.nonfinite == 2
     assert result.compared == 1
+    assert result.matched == 3
+    assert result.disagreed == 0
+    assert result.compared + result.matched + result.disagreed == want.size
 
 
 def test_a_silently_non_finite_graph_does_not_pass():
@@ -194,8 +197,8 @@ def test_a_silently_non_finite_graph_does_not_pass():
     got = np.array([[[[1.0, np.nan, 3.0]]]])
     result = compare(want, got)
     assert not result.ok
-    assert result.finite_mismatch == 1
-    assert "finite" in str(result)
+    assert result.disagreed == 1
+    assert "class" in str(result)
 
 
 def test_a_finite_graph_where_the_reference_overflows_does_not_pass():
@@ -203,7 +206,43 @@ def test_a_finite_graph_where_the_reference_overflows_does_not_pass():
     got = np.array([[[[1.0, 4.0, 3.0]]]])
     result = compare(want, got)
     assert not result.ok
-    assert result.finite_mismatch == 1
+    assert result.disagreed == 1
+
+
+def test_an_inverted_infinity_does_not_pass():
+    """A direction inverted at overflow: the reference falls to ``-inf`` where
+    the graph climbs to ``+inf``, with every finite sample agreeing. Dropping
+    the non-finite samples reads this as agreement (§spec:evidence-floor)."""
+    want = np.array([[[[1.0, np.inf, 3.0]]]])
+    got = np.array([[[[1.0, -np.inf, 3.0]]]])
+    result = compare(want, got)
+    assert not result.ok
+    assert result.compared == 2
+    assert result.disagreed == 1
+
+
+def test_a_nan_reference_against_an_infinite_graph_does_not_pass():
+    want = np.array([[[[1.0, np.nan, 3.0]]]])
+    got = np.array([[[[1.0, np.inf, 3.0]]]])
+    result = compare(want, got)
+    assert not result.ok
+    assert result.disagreed == 1
+
+
+def test_a_reference_that_is_nan_everywhere_is_not_evidence():
+    """Nothing is held against the tolerance, so there is nothing to certify
+    (§spec:evidence-floor)."""
+    result = compare(np.full(12, np.nan), np.full(12, np.nan))
+    assert not result.ok
+    assert result.compared == 0
+    assert result.matched == 12
+
+
+def test_opposite_infinities_everywhere_are_not_evidence():
+    result = compare(np.full(12, np.inf), np.full(12, -np.inf))
+    assert not result.ok
+    assert result.compared == 0
+    assert result.disagreed == 12
 
 
 def test_cpu_reference_preserves_shape_and_precision(config, config_uri):

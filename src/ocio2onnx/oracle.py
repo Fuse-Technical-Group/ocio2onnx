@@ -5,6 +5,10 @@ reading of the config — a direction inverted, a breakpoint on the wrong side
 of a comparison. Hand-checked values do not catch that; a lattice against the
 reference does. So the harness comes before the emitters: it is the failing
 test each one is written against.
+
+Every sample it draws is evidence: one the tolerance decides, or one where the
+two sides carry the same class of non-finite value. None is dropped, and a
+graph verifies only once the finite kind has occurred (§spec:evidence-floor).
 """
 
 from __future__ import annotations
@@ -84,13 +88,20 @@ class Worst:
 
 @dataclasses.dataclass(frozen=True)
 class Comparison:
-    """What the oracle found, in enough detail to act on without a debugger."""
+    """What the oracle found, in enough detail to act on without a debugger.
+
+    Every sample lands in exactly one of three counts (§spec:evidence-floor):
+    ``compared`` held against the tolerance, ``matched`` where both sides are
+    the same class of non-finite value, and ``disagreed`` where the classes
+    differ. Their sum is the lattice, so a report states what was established
+    rather than what survived a filter.
+    """
 
     ok: bool
     compared: int
     failures: int
-    nonfinite: int
-    finite_mismatch: int
+    matched: int
+    disagreed: int
     max_abs: float
     max_rel: float
     worst: Worst | None
@@ -100,13 +111,15 @@ class Comparison:
             f"{self.failures} of {self.compared} samples outside tolerance "
             f"(max abs {self.max_abs:.3g}, max rel {self.max_rel:.3g})"
         ]
-        if self.finite_mismatch:
+        if self.matched:
+            parts.append(f"{self.matched} non-finite samples agreed on class")
+        if self.disagreed:
             parts.append(
-                f"{self.finite_mismatch} samples where the graph is finite and "
-                "the reference is not, or the reverse"
+                f"{self.disagreed} samples disagreed on class "
+                "(finite, +inf, -inf, and NaN are four distinct answers)"
             )
-        if self.nonfinite:
-            parts.append(f"{self.nonfinite} non-finite reference samples ignored")
+        if not self.compared:
+            parts.append("no finite sample was compared, so nothing was established")
         if self.worst is not None:
             w = self.worst
             parts.append(
@@ -115,6 +128,21 @@ class Comparison:
                 f"(abs {w.absolute:.3g}, rel {w.relative:.3g})"
             )
         return "; ".join(parts)
+
+
+#: The four answers a sample can carry. A non-finite value has no magnitude to
+#: measure a tolerance against, so agreement there is agreement on the class
+#: (§spec:evidence-floor).
+FINITE, POSITIVE_INFINITY, NEGATIVE_INFINITY, NOT_A_NUMBER = range(4)
+
+
+def classify(values: np.ndarray) -> np.ndarray:
+    """Which of the four classes each value falls in."""
+    return np.select(
+        [np.isfinite(values), np.isnan(values), values > 0],
+        [FINITE, NOT_A_NUMBER, POSITIVE_INFINITY],
+        default=NEGATIVE_INFINITY,
+    )
 
 
 def straddle(value: float) -> tuple[float, float, float]:
@@ -183,18 +211,23 @@ def compare(
 ) -> Comparison:
     """Hold the graph's output against the reference (§spec:verification).
 
-    Non-finite reference values are ignored rather than compared — some
-    transforms overflow float32 at 65504 — but the graph must be non-finite in
-    exactly the same places, or a silently NaN graph would pass.
+    No sample is dropped (§spec:evidence-floor). Where both sides are finite
+    the tolerance decides. Where either is not — some transforms overflow
+    float32 at 65504 — there is no magnitude to measure, so the graph shall
+    return the class the reference returned: a reference falling to ``-inf``
+    where the graph climbs to ``+inf`` is a direction inverted, not agreement.
+
+    Agreement also needs one finite comparison. A reference that is non-finite
+    across the whole lattice otherwise certifies a graph on no evidence.
     """
     want = np.asarray(want, dtype=np.float64)
     got = np.asarray(got, dtype=np.float64)
     if want.shape != got.shape:
         raise ValueError(f"reference is {want.shape}, graph output is {got.shape}")
 
-    reference_finite = np.isfinite(want)
-    mismatch = reference_finite != np.isfinite(got)
-    usable = np.flatnonzero(reference_finite & ~mismatch)
+    agree = classify(want) == classify(got)
+    finite = np.isfinite(want) & agree
+    usable = np.flatnonzero(finite)
 
     w = want.ravel()[usable]
     g = got.ravel()[usable]
@@ -218,13 +251,13 @@ def compare(
         )
 
     failures = int(over.sum())
-    finite_mismatch = int(mismatch.sum())
+    disagreed = int((~agree).sum())
     return Comparison(
-        ok=failures == 0 and finite_mismatch == 0,
+        ok=failures == 0 and disagreed == 0 and usable.size > 0,
         compared=usable.size,
         failures=failures,
-        nonfinite=int((~reference_finite).sum()),
-        finite_mismatch=finite_mismatch,
+        matched=int(agree.sum()) - usable.size,
+        disagreed=disagreed,
         max_abs=float(deviation.max()) if deviation.size else 0.0,
         max_rel=float(relative.max()) if relative.size else 0.0,
         worst=worst,

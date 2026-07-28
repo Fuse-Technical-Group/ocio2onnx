@@ -160,6 +160,25 @@ def test_the_pair_under_test_verifies(config, config_uri):
     assert result.failures == 0
 
 
+def test_a_matrix_of_nans_is_not_verified_on_no_evidence(config, config_uri):
+    """A NaN coefficient is one step from an arbitrary config, and it takes the
+    reference non-finite across the whole lattice. The graph matches it
+    everywhere, so nothing is held against the tolerance — and a graph
+    certified on no evidence is worse than one that refuses
+    (§spec:evidence-floor)."""
+    resolved = Resolved(
+        processor=config.getProcessor(matrix_transform(np.full((4, 4), np.nan))),
+        config_name=config.getName(),
+        config_uri=config_uri,
+        endpoints="a matrix of NaNs",
+    )
+    result = verify(resolved)
+
+    assert not result.ok
+    assert result.compared == 0
+    assert result.matched + result.disagreed == lattice(resolved.processor).size
+
+
 def test_a_swapped_row_fails_verification_diagnosably(config, config_uri):
     """The harness exists to catch a misreading; prove it catches one."""
     resolved = resolve_colorspaces(config, *PAIR, uri=config_uri)

@@ -350,7 +350,7 @@ def config_with_a_live_grade(tmp_path):
 def test_compile_emits_live_parameters_and_says_what_they_are(
     config_with_a_live_grade, graph, capsys
 ):
-    """§road:scalar-dynamics, end to end: a caller compiles a graded transform
+    """§spec:dynamic-properties, end to end: a caller compiles a graded transform
     and gets a graph whose grade is a set of named, defaulted inputs it can
     vary per frame without compiling again."""
     code = main(

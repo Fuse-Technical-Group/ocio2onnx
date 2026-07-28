@@ -108,9 +108,12 @@ def test_a_bare_exposure_contrast_verifies_at_its_defaults(
 def test_one_graph_tracks_ocio_across_a_swept_parameter(
     name, setter, sweep, style, inverse, config, check, compile_bare
 ):
-    """The workstream's acceptance test (§road:scalar-dynamics). The graph is
-    compiled once, at the defaults, and every swept value is held against the
-    processor OCIO builds for it — which is the claim: no recompilation."""
+    """The acceptance test for a live parameter (§spec:dynamic-properties).
+
+    The graph is compiled once, at the defaults, and every swept value is held
+    against the processor OCIO builds for it — which is the claim a live
+    parameter makes: no recompilation.
+    """
     model = compile_bare(config.getProcessor(exposure_contrast(style, inverse=inverse)))
 
     for value in sweep:
@@ -214,13 +217,14 @@ def test_the_log_inverse_floors_the_reciprocal_rather_than_the_product(
     the log inverse's slope at 1000 where OCIO puts it at 0.001. Measurable,
     because that style carries no power to amplify anything."""
     style = OCIO.EXPOSURE_CONTRAST_LOGARITHMIC
-    model = compile_bare(config.getProcessor(exposure_contrast(style)))
+    model = compile_bare(config.getProcessor(exposure_contrast(style, inverse=True)))
     result = check(
-        config.getProcessor(exposure_contrast(style, Contrast=FLOORED)),
+        config.getProcessor(exposure_contrast(style, inverse=True, Contrast=FLOORED)),
         model=model,
         parameters={"CONTRAST": [FLOORED]},
     )
     assert result.ok, str(result)
+    assert result.compared > 0
 
 
 def test_a_contrast_of_zero_leaves_the_log_inverse_with_nothing_finite(

@@ -9,7 +9,6 @@ input per live parameter (§spec:dynamic-properties).
 from __future__ import annotations
 
 import collections
-import itertools
 from typing import Any
 
 import numpy as np
@@ -118,13 +117,10 @@ class GraphBuilder:
         is a limit of that plumbing rather than of a graph.
         """
         taken = {value.name for value in self._parameters}
-        unique = next(
-            candidate
-            for candidate in itertools.chain(
-                [name], (f"{name}_{index}" for index in itertools.count(2))
-            )
-            if candidate not in taken
-        )
+        unique, index = name, 1
+        while unique in taken:
+            index += 1
+            unique = f"{name}_{index}"
         self._initializers.append(
             numpy_helper.from_array(np.asarray(array, dtype=np.float32), unique)
         )
@@ -155,6 +151,9 @@ class GraphBuilder:
 
     def pow(self, a: str, b: str) -> str:
         return self.op("Pow", [a, b])
+
+    def reciprocal(self, x: str) -> str:
+        return self.op("Reciprocal", [x])
 
     def to_int64(self, x: str) -> str:
         """Cast to int64, which is what a ``Gather`` index must be.
@@ -204,14 +203,15 @@ def parameters(model: onnx.ModelProto) -> dict[str, np.ndarray]:
     answers for itself and a consumer that never loaded this package can ask
     the same question (§spec:dynamic-properties).
     """
-    defaults = {
-        initializer.name: numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+    # Keyed off the inputs rather than off the initializers, so a half-domain
+    # `Lut1D`'s 65536 entries are never decoded to report a handful of scalars.
+    initializers = {
+        initializer.name: initializer for initializer in model.graph.initializer
     }
     return {
-        value.name: defaults[value.name]
+        value.name: numpy_helper.to_array(initializers[value.name])
         for value in model.graph.input
-        if value.name in defaults
+        if value.name in initializers
     }
 
 

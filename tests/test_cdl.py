@@ -95,10 +95,10 @@ def test_the_graph_declares_one_input_per_cdl_parameter(
     """The defaults are the forward grade OCIO reports, whichever direction the
     op runs: the knob is the CDL's slope, not the reciprocal the inverse
     happens to multiply by."""
-    model = compile_bare(config.getProcessor(cdl(style, inverse=inverse)))
-    assert list(parameters(model)) == INPUTS
-
-    defaults = parameters(model)
+    defaults = parameters(
+        compile_bare(config.getProcessor(cdl(style, inverse=inverse)))
+    )
+    assert list(defaults) == INPUTS
     assert defaults["CDL_SLOPE"] == pytest.approx(SLOPE)
     assert defaults["CDL_OFFSET"] == pytest.approx(OFFSET)
     assert defaults["CDL_POWER"] == pytest.approx(POWER)
@@ -119,17 +119,20 @@ def test_a_bare_cdl_verifies_at_its_defaults(style, inverse, check_transform):
 def test_one_graph_tracks_ocio_across_a_swept_parameter(
     name, setter, sweep, style, inverse, config, check, compile_bare
 ):
-    """The workstream's acceptance test (§road:scalar-dynamics). One graph,
-    compiled at the defaults, held against the processor OCIO builds at each
-    swept value — the grade moves without a recompile."""
+    """The acceptance test for a live parameter (§spec:dynamic-properties).
+
+    One graph, compiled at the defaults, held against the processor OCIO builds
+    at each swept value — the grade moves without a recompile.
+    """
     model = compile_bare(config.getProcessor(cdl(style, inverse=inverse)))
 
     for value in sweep:
         reference = cdl(style, inverse=inverse)
         getattr(reference, setter)(value)
-        bound = [value] if np.isscalar(value) else value
         result = check(
-            config.getProcessor(reference), model=model, parameters={name: bound}
+            config.getProcessor(reference),
+            model=model,
+            parameters={name: np.atleast_1d(value)},
         )
         assert result.ok, f"{name}={value}: {result}"
         assert result.compared > 0
@@ -219,30 +222,31 @@ def test_two_ops_carry_a_knob_each(config, compile_bare):
     assert defaults["CDL_SATURATION_2"] == pytest.approx([1.5])
 
 
-@pytest.mark.parametrize("inverse", (False, True))
-def test_the_clamping_style_declares_the_unit_interval_as_its_breakpoints(inverse):
-    """``ASC`` clamps to [0, 1]. Forward the clamp sits after the slope and
-    offset, so its breakpoints are those bounds read back through them;
-    inverse it sits on the input itself."""
-    transform = cdl(OCIO.CDL_ASC, inverse=inverse)
-    if inverse:
-        assert emitters.breakpoints(transform) == [0.0, 1.0]
-    else:
-        assert emitters.breakpoints(transform) == pytest.approx(
-            sorted(
-                (bound - offset) / slope
-                for bound in (0.0, 1.0)
-                for slope, offset in zip(SLOPE, OFFSET, strict=True)
-            )
-        )
+#: Where the graded value crosses 0 and 1 for the grade above, stated rather
+#: than re-derived: a sign error in ``cdl_breakpoints`` would be reproduced by
+#: an expectation that runs the same formula.
+SIGN_BRANCH = [-0.0181818, 0.0, 0.0375]
+UNIT_CLAMP = [0.8909091, 1.0526316, 1.2875]
+
+
+def test_the_clamping_style_declares_the_unit_interval_as_its_breakpoints():
+    """``ASC`` clamps to [0, 1], and forward that clamp sits after the slope and
+    the offset, so its breakpoints are those bounds read back through them."""
+    assert emitters.breakpoints(cdl(OCIO.CDL_ASC)) == pytest.approx(
+        sorted(SIGN_BRANCH + UNIT_CLAMP), abs=1e-6
+    )
+
+
+def test_the_clamping_inverse_declares_the_unit_interval_itself():
+    """Inverse, ``ASC``'s first clamp is on the input."""
+    assert emitters.breakpoints(cdl(OCIO.CDL_ASC, inverse=True)) == [0.0, 1.0]
 
 
 def test_the_unclamped_style_declares_where_its_sign_branch_sits():
     """``NO_CLAMP`` passes a negative value through the power untouched, so the
-    branch is where the graded value crosses zero."""
-    transform = cdl(OCIO.CDL_NO_CLAMP)
-    assert emitters.breakpoints(transform) == pytest.approx(
-        sorted(-offset / slope for slope, offset in zip(SLOPE, OFFSET, strict=True))
+    branch is where the graded value crosses zero — and only there."""
+    assert emitters.breakpoints(cdl(OCIO.CDL_NO_CLAMP)) == pytest.approx(
+        SIGN_BRANCH, abs=1e-6
     )
 
 
@@ -255,10 +259,11 @@ def test_the_unclamped_inverse_states_its_branch_on_the_diagonal():
 
 
 def test_a_breakpoint_a_collapsed_channel_cannot_place_is_dropped():
-    """A slope of zero puts a clamp bound at infinity. The lattice takes
-    finite values, so there is nothing to straddle and nothing is offered."""
-    transform = cdl(OCIO.CDL_NO_CLAMP, Slope=[0.0, 1.0, 1.0], Offset=[0.5, 0.0, 0.0])
-    assert all(np.isfinite(emitters.breakpoints(transform)))
+    """A slope of zero puts the branch at infinity. The lattice takes finite
+    values, so there is nothing to straddle and that channel offers nothing —
+    while the two beside it still do."""
+    transform = cdl(OCIO.CDL_NO_CLAMP, Slope=[0.0, 1.0, 2.0], Offset=[0.5, 0.25, -0.5])
+    assert emitters.breakpoints(transform) == pytest.approx([-0.25, 0.25])
 
 
 def test_a_style_this_compiler_has_no_path_for_is_refused_by_name(

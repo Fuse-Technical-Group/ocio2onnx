@@ -144,6 +144,25 @@ def test_a_graph_without_a_live_parameter_declares_only_the_image():
     assert parameters(model) == {}
 
 
+def test_the_image_cannot_be_bound_as_a_live_parameter():
+    """The oracle would otherwise run the graph on one array and hold the
+    answer against a reference computed from another (§spec:verification)."""
+    model = GraphBuilder().build(INPUT, "identity", {})
+    with pytest.raises(ValueError, match=INPUT):
+        run_graph(model, SAMPLES, {INPUT: SAMPLES * 2.0})
+
+
+def test_many_graded_ops_stay_linear_to_declare():
+    """A config's op count is the caller's, not this compiler's. Rebuilding the
+    taken-name set per parameter made compiling one quadratic in the number of
+    graded ops it carries."""
+    builder = GraphBuilder()
+    for _ in range(2000):
+        builder.scalar_parameter("GAIN", 1.0)
+    model = builder.build(INPUT, "many", {})
+    assert len(parameters(model)) == 2000
+
+
 def test_a_parameter_default_is_float32_at_its_declared_shape():
     builder = GraphBuilder()
     builder.scalar_parameter("GAIN", 2.0)

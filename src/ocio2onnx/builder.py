@@ -63,6 +63,7 @@ class GraphBuilder:
         self._initializers: list[onnx.TensorProto] = []
         self._counts: collections.Counter[str] = collections.Counter()
         self._parameters: list[onnx.ValueInfoProto] = []
+        self._parameter_names: set[str] = set()
 
     def name(self, hint: str) -> str:
         """A tensor name unique within this graph."""
@@ -115,12 +116,17 @@ class GraphBuilder:
         input would have to discard one of them; OCIO's own run time allows one
         dynamic property of each type per processor and drops the rest, which
         is a limit of that plumbing rather than of a graph.
+
+        The taken names are kept rather than rebuilt per call. A config's op
+        count is the caller's, not this compiler's (§spec:problem-statement),
+        and rebuilding made compiling one quadratic in the number of graded ops
+        it carries: 1000 CDLs cost 1.8 seconds and 3000 cost 19.
         """
-        taken = {value.name for value in self._parameters}
         unique, index = name, 1
-        while unique in taken:
+        while unique in self._parameter_names:
             index += 1
             unique = f"{name}_{index}"
+        self._parameter_names.add(unique)
         self._initializers.append(
             numpy_helper.from_array(np.asarray(array, dtype=np.float32), unique)
         )

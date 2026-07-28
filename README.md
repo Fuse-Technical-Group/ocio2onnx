@@ -150,6 +150,11 @@ parameters(model)  # {"EXPOSURE": array([0.5], dtype=float32), ...}
 session.run(None, {"input": image, "EXPOSURE": [1.5]})
 ```
 
+A knob needs an op to hang on. OCIO drops an identity op before the compiler
+sees it, so a template config whose grade is neutral — exposure 0, contrast
+1, slope `[1, 1, 1]` — compiles to a graph with no inputs at all. Author it
+at the value the grade starts from, not at the identity.
+
 The four `GRADING_*` families are not emitted — their parameters are control
 points rather than values — and refuse by name like any other unimplemented
 op. See [ROADMAP.md](ROADMAP.md).

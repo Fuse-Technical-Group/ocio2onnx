@@ -85,10 +85,10 @@ def test_every_config_transform_the_op_unblocks_verifies(carrying_the_op, check)
     """The workstream's acceptance test: the 24 display views that refused on
     this op alone now compile and agree with OCIO's CPU processor.
 
-    Every sample is compared, because a display rendering compresses to a
-    display range and the reference is finite across the whole lattice — a
-    verified result over a suspiciously small sample count would mean the
-    graph, not the reference, had gone non-finite.
+    Every sample is held against the tolerance rather than matched by class,
+    because a display rendering compresses to a display range and the reference
+    is finite across the whole lattice — a sample matched by class would mean
+    the graph, not the reference, had gone non-finite.
     """
     failures = []
     for label, processor in carrying_the_op.items():
@@ -96,8 +96,8 @@ def test_every_config_transform_the_op_unblocks_verifies(carrying_the_op, check)
         result = check(processor, label)
         if not result.ok:
             failures.append(f"{label}: {result}")
-        elif result.nonfinite:
-            failures.append(f"{label}: {result.nonfinite} samples went uncompared")
+        elif result.matched:
+            failures.append(f"{label}: {result.matched} samples matched by class")
     assert not failures, "\n".join(failures)
 
 

@@ -288,7 +288,7 @@ defining a transform, which §spec:non-goals forbids, and would read as
 error against the oracle.
 
 ## Verification §spec:verification
-*Status: in progress*
+*Status: complete*
 
 OCIO's CPU processor is the oracle. For every transform the compiler
 claims to support, a test generates an input lattice — including values
@@ -343,26 +343,26 @@ a named op. All 159 verify.
 
 ### What counts as evidence §spec:evidence-floor
 
-Some transforms overflow float32 somewhere in the lattice: 12 of the pinned
-config's 159 verified transforms do, at up to 36 samples of a lattice of
-about 1250. A non-finite reference value carries no magnitude to measure a
-tolerance against, so agreement at those samples is asserted on the *kind* of value
-instead — `+inf`, `-inf`, and NaN are three distinct answers, and the graph
-shall return the one the reference returned. Every sample is therefore
-evidence: a sample is compared against the tolerance or matched against a
-class, never dropped.
+Every sample is evidence: one is held against the tolerance where both sides
+are finite, and matched against its *class* otherwise, never dropped. A
+non-finite reference value carries no magnitude to measure a tolerance
+against, so what is asserted there is the kind of answer — finite, `+inf`,
+`-inf`, and NaN are four distinct answers, and the graph returns the one the
+reference returned. Twelve of the pinned config's 159 transforms reach that
+path, at up to 36 samples of a lattice of about 1250, and every one of those
+387 samples agrees on its class.
 
 *Why not drop them*: a direction inverted at overflow, the reference falling
 to `-inf` where the graph climbs to `+inf`, is exactly the misreading this
 section exists to catch. Dropping the sample reads that as agreement.
 
-A verified graph shall also have at least one finite sample compared. A
-transform whose reference is non-finite across the whole lattice otherwise
-compares nothing and reports agreement — a graph certified on no evidence,
-which is worse than one that refuses, because "verified" is a claim the
-consumer acts on. No transform in the pinned config is in that state today;
-a config the compiler is handed is arbitrary (§spec:problem-statement), and
-a NaN coefficient in a config-declared matrix is enough to reach it.
+Agreement also needs at least one finite sample compared. A transform whose
+reference is non-finite across the whole lattice otherwise compares nothing
+and reports agreement — a graph certified on no evidence, which is worse than
+one that refuses, because "verified" is a claim the consumer acts on. No
+transform in the pinned config is in that state; a config the compiler is
+handed is arbitrary (§spec:problem-statement), and a NaN coefficient in a
+config-declared matrix reaches it in one step.
 
 *Why a floor of one sample rather than a fraction of the lattice*: a
 percentage would need a constant this document cannot derive from anything,

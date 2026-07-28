@@ -46,8 +46,9 @@ LINEAR = "LINEAR"
 class UnsupportedOpError(NotImplementedError):
     """An op, or a parameter of one, the compiler does not emit.
 
-    Raised at the op that stopped emission. §road:named-refusal replaces this
-    with a pre-emission check that names the transform and its endpoints too.
+    One type for both: ``compiler.unsupported_ops`` refuses an op type before
+    emission, an emitter refuses a parameter it has no path for during it, and
+    a caller catching a refusal should not have to care which raised it.
     """
 
 
@@ -92,6 +93,47 @@ def emitter_for(transform: Any) -> Emitter | None:
     return REGISTRY.get(type(transform).__name__)
 
 
+def supported_ops() -> frozenset[str]:
+    """The op types this compiler emits, as bare names.
+
+    Read off the registry, so it is one source of truth: an op OCIO adds in a
+    future release is absent from it and refused, rather than needing a second
+    list to be updated before anyone notices (§spec:op-coverage).
+    """
+    return frozenset(name.removesuffix("Transform") for name in REGISTRY)
+
+
+def _enum_member(value: Any, prefix: str = "") -> str:
+    """An OCIO enum member's bare name. ``str`` gives ``Class.MEMBER``, and the
+    member repeats its class in the prefix callers drop here."""
+    return str(value).rsplit(".", 1)[-1].removeprefix(prefix)
+
+
+#: Op types whose behaviour is set by an attribute rather than by the type
+#: alone, and the reading that names it. ``FixedFunction`` is two unrelated
+#: transforms sharing a class — ``REC2100_SURROUND`` and
+#: ``ACES_OUTPUT_TRANSFORM_20`` differ by an order of magnitude in cost and in
+#: risk, and are separate workstreams — so a refusal naming only the type
+#: cannot say which one blocked the caller (§spec:op-coverage).
+DISTINGUISHING: dict[str, Callable[[Any], str]] = {
+    "FixedFunctionTransform": lambda transform: _enum_member(
+        transform.getStyle(), "FIXED_FUNCTION_"
+    ),
+}
+
+
+def op_label(transform: Any) -> str:
+    """How a refusal names one op.
+
+    An op type with a distinguishing attribute names it; one without names the
+    type alone.
+    """
+    class_name = type(transform).__name__
+    op = class_name.removesuffix("Transform")
+    attribute = DISTINGUISHING.get(class_name)
+    return f"{op}[{attribute(transform)}]" if attribute is not None else op
+
+
 def breakpoints(transform: Any) -> list[float]:
     """Where this transform switches branches. Empty for an unregistered op:
     the lattice widens where it can and the compiler refuses where it cannot.
@@ -127,9 +169,7 @@ def _negative_style(transform: Any, supported: tuple[str, ...]) -> str:
     config over exactly the inputs the style exists to govern, so it is
     refused instead (§spec:op-coverage).
     """
-    style = (
-        str(transform.getNegativeStyle()).rsplit(".", 1)[-1].removeprefix("NEGATIVE_")
-    )
+    style = _enum_member(transform.getNegativeStyle(), "NEGATIVE_")
     if style not in supported:
         op = type(transform).__name__.removesuffix("Transform")
         raise UnsupportedOpError(

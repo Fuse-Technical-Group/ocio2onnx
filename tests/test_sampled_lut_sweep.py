@@ -8,8 +8,9 @@ closed-form, 40 carry a table, 8 carry a fixed function and no table, and
 111 + 40 + 8 is the config. So "all 159 verify" is asserted rather than
 sampled, and nothing is left over to be quietly dropped.
 
-Four of the 40 are the HLG transforms `REC2100_SURROUND` unblocked, and
-seventeen more are ACES display renderings reaching a PQ or HLG display
+Twenty of the 40 also carry a fixed function: four are the HLG transforms
+`REC2100_SURROUND` unblocked, and sixteen are ACES display renderings reaching
+a PQ or HLG display, one of which is an HLG view carrying both styles
 (§spec:op-coverage). They land here rather than in their own modules because
 each pairs a fixed function with a curve OCIO ships as a table.
 

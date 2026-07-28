@@ -3,6 +3,11 @@ on:
   pull_request:
   merge_group:
 
+# The python job runs repository code (pytest) on pull_request, so give the
+# token nothing beyond the checkout it needs.
+permissions:
+  contents: read
+
 jobs:
   markdownlint:
     runs-on: ubuntu-latest
@@ -18,7 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      # Pinned to an exact release: setup-uv stopped publishing floating
+      # major tags at v8, so `@v9` does not exist and `@v7` would be mutable.
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
       # Pinned to 3.12: opencolorio publishes no wheel for 3.13+.

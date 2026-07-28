@@ -8,7 +8,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 UV="${UV:-uv}"
-RUN=("$UV" run --python 3.12 --extra verify --extra dev)
+# --locked: a dependency edit that outruns uv.lock fails here rather than
+# resolving something nobody reviewed.
+RUN=("$UV" run --locked --python 3.12 --extra verify --extra dev)
 
 "${RUN[@]}" ruff check .
 "${RUN[@]}" ruff format --check .

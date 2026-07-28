@@ -1754,15 +1754,16 @@ def _gamut_compress(
     limit = builder.scalar("aces2_limit_lightness", params.limit_lightness)
 
     upper = _hue_interval(builder, hue, builder.add(position, one), params)
+    lower = builder.sub(upper, one)
     hues = builder.constant("aces2_hues", params.hues)
-    hue_low = _sample(builder, hues, builder.sub(upper, one))
+    hue_low = _sample(builder, hues, lower)
     weight = builder.div(
         builder.sub(hue, hue_low), builder.sub(_sample(builder, hues, upper), hue_low)
     )
     cusp_lightness, cusp_colourfulness, upper_hull_gamma_inv = (
         _lerp(
             builder,
-            _sample(builder, column, builder.sub(upper, one)),
+            _sample(builder, column, lower),
             _sample(builder, column, upper),
             weight,
         )

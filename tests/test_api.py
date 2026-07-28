@@ -1,4 +1,4 @@
-"""The package's public surface (§road:closed-form-emitters).
+"""The package's public surface (§spec:op-emission).
 
 Two entry points, each loading a config, resolving a request against it, and
 compiling the processor OCIO returns. They hold no logic of their own, so what
@@ -30,7 +30,7 @@ from ocio2onnx.compiler import compile_processor
 from ocio2onnx.oracle import compare, cpu_reference, lattice, run_graph
 from ocio2onnx.oracle import verify as oracle_verify
 
-#: The pair §road:compiler-core names as its verification: a camera log
+#: The pair §spec:verification names: a camera log
 #: encoding back to the reference.
 PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 

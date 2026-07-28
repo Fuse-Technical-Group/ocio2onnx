@@ -1,4 +1,4 @@
-"""OCIO's CPU processor is the oracle (§spec:verification, §road:oracle-harness).
+"""OCIO's CPU processor is the oracle (§spec:verification).
 
 The failure mode this catches is not a wrong constant but a subtly wrong
 reading of the config — a direction inverted, a breakpoint on the wrong side

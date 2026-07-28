@@ -1,4 +1,4 @@
-"""The command line (§road:compiler-core).
+"""The command line (§spec:op-coverage).
 
 The section's integration surface, and its acceptance test. The ROADMAP's
 Verify block asks for three things — a named pair compiles and agrees with the
@@ -29,7 +29,7 @@ from ocio2onnx.cli import (
     main,
 )
 
-#: The pair §road:compiler-core names as its verification.
+#: The pair §spec:verification names.
 PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 
 #: The display view it names as its refusal, and the style that blocks it.

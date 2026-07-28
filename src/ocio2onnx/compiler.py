@@ -1,7 +1,7 @@
-"""Walk a resolved processor and emit one ONNX graph (§road:compiler-core).
+"""Walk a resolved processor and emit one ONNX graph (§spec:op-coverage).
 
 OCIO reports a processor's ops before anything executes, so the compiler reads
-the whole op list first and refuses there (§road:named-refusal). Refusing
+the whole op list first and refuses there. Refusing
 during emission would name whichever unimplemented op came first and leave a
 half-built graph behind; refusing before it names them all, and the answer
 does not depend on op order (§spec:op-coverage).

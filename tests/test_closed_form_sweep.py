@@ -1,5 +1,5 @@
 """Every closed-form transform in the pinned config, against the oracle
-(§road:closed-form-emitters, §spec:verification).
+(§spec:op-coverage, §spec:verification).
 
 This is the workstream's acceptance test. Coverage is asserted rather than
 sampled: the count is fixed at the number §spec:op-coverage measured, every

@@ -1,5 +1,5 @@
 """``Matrix`` emits a 1x1 convolution, and the oracle says whether the
-parameters were read correctly (§road:oracle-harness, §spec:op-emission).
+parameters were read correctly (§spec:verification, §spec:op-emission).
 
 ``Matrix`` is the op whose correctness is legible by inspection, which is what
 makes it the right one to exercise the harness on: a swapped row is visible in

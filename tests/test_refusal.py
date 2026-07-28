@@ -1,4 +1,4 @@
-"""Refusing an op before anything is emitted (§road:named-refusal).
+"""Refusing an op before anything is emitted (§spec:op-coverage).
 
 The check is written against the supported set rather than against a list of
 known-bad ops, so it is a statement about what the compiler emits. An op a
@@ -18,10 +18,10 @@ from ocio2onnx.addressing import (
 from ocio2onnx.compiler import compile_processor, unsupported_ops
 from ocio2onnx.emitters import REGISTRY, UnsupportedOpError, op_label, supported_ops
 
-#: The pair §road:compiler-core compiles.
+#: The pair the compiler emits.
 PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 
-#: The display view §road:compiler-core refuses, and the style that blocks it.
+#: The display view the compiler refuses, and the style that blocks it.
 ACES_VIEW = ("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
 ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 

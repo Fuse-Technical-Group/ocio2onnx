@@ -1,4 +1,4 @@
-"""The lattice, the tolerance, and the reference (§road:oracle-harness,
+"""The lattice, the tolerance, and the reference (§spec:verification,
 §spec:verification).
 
 The harness is the failing test every emitter is written against, so its own

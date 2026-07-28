@@ -1,4 +1,4 @@
-"""Compile, verify, and measure from the command line (§road:compiler-core).
+"""Compile, verify, and measure from the command line (§spec:verification).
 
 Three subcommands, one per question a consumer asks: emit this transform,
 does the compiler agree with OCIO across a config, and what does that config

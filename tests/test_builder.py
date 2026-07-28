@@ -1,5 +1,5 @@
 """The builder names tensors and settles the graph's interface; it holds no
-color knowledge (§road:oracle-harness, §spec:emitted-graph).
+color knowledge (§spec:emitted-graph).
 """
 
 import numpy as np

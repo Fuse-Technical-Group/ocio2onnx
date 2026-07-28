@@ -1,4 +1,4 @@
-"""Resolve a compile request to an OCIO processor (§road:transform-addressing).
+"""Resolve a compile request to an OCIO processor (§spec:emitted-graph).
 
 A request names a config plus either a source and target color space or a
 display and a view. Every name is checked against the config that was

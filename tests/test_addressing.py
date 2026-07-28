@@ -1,5 +1,5 @@
 """A compile request resolves to a processor, or is refused by name
-(§road:transform-addressing, §spec:emitted-graph).
+(§spec:emitted-graph).
 """
 
 import PyOpenColorIO as OCIO

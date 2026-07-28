@@ -10,7 +10,7 @@ op switches branches. The oracle's lattice asks every op in a processor for
 them and samples either side, because a breakpoint read onto the wrong side
 of a comparison is the misreading verification exists to catch
 (§spec:verification). ``Matrix`` has none; the branching ops added by
-§road:closed-form-emitters widen the lattice by declaring theirs.
+the branching ops widen the lattice by declaring theirs.
 """
 
 from __future__ import annotations

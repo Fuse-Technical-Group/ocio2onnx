@@ -23,7 +23,7 @@ SCALING_BOUNDS = (-0.36, 1.5, 0.0, 1.0)
 INVERSE_SCALING_BOUNDS = (0.0, 1.0, -0.36, 1.5)
 HALF_OPEN_BOUNDS = (0.0, math.nan, 0.0, math.nan)
 
-RANGE = "RangeTransform"
+RANGE = "Range"
 
 BOUND_SETS = (
     IDENTITY_BOUNDS,

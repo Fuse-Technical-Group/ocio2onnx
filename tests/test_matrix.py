@@ -16,6 +16,7 @@ from ocio2onnx.addressing import (
     METADATA_PREFIX,
     enumerate_transforms,
     resolve_colorspaces,
+    resolve_display_view,
 )
 from ocio2onnx.builder import (
     IMAGE_SHAPE,
@@ -63,15 +64,16 @@ def emit(transform):
 
 
 def test_the_registry_carries_matrix_and_its_breakpoint_hook():
-    entry = emitters.REGISTRY["MatrixTransform"]
+    entry = emitters.REGISTRY["Matrix"]
     assert entry.emit is emitters.emit_matrix
     assert entry.breakpoints(OCIO.MatrixTransform()) == []
 
 
 def test_an_unregistered_transform_yields_no_emitter():
-    unregistered = OCIO.FixedFunctionTransform(
-        OCIO.FIXED_FUNCTION_REC2100_SURROUND, [1.0]
-    )
+    """A style of a class the registry does carry, which it does not: the
+    registry keys on ``op_label``, so ``FixedFunction`` being present for one
+    style says nothing about another."""
+    unregistered = OCIO.FixedFunctionTransform(OCIO.FIXED_FUNCTION_ACES_RED_MOD_03)
     assert emitters.emitter_for(unregistered) is None
     assert emitters.breakpoints(unregistered) == []
 
@@ -177,8 +179,10 @@ def test_a_swapped_row_fails_verification_diagnosably(config, config_uri):
 
 
 def test_an_unimplemented_op_is_refused_by_name(config, config_uri):
-    resolved = resolve_colorspaces(
-        config, "ACES2065-1", "Rec.2100-HLG - Display", uri=config_uri
+    """A ``Matrix`` beside an op the compiler has no emitter for does not make
+    the transform emittable."""
+    resolved = resolve_display_view(
+        config, "sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)", uri=config_uri
     )
     with pytest.raises(UnsupportedOpError, match="FixedFunction"):
         compile_processor(resolved)

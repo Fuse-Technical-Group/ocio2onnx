@@ -30,10 +30,11 @@ LUT_HUE_ADJUST = OCIO.HUE_DW3
 ACES_VIEW = ("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
 ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 
-#: A view carrying two unimplemented ops, the first of them four ops in.
+#: Two unimplemented ops in one transform, the second behind the first.
 #: Emitting until something unsupported turns up would name one and stop.
-CROWDED_VIEW = ("Rec.2100-HLG - Display", "ACES 2.0 - HDR 1000 nits (P3 D65)")
-CROWDED_OPS = [ACES_STYLE, "FixedFunction[REC2100_SURROUND]"]
+#: Built rather than found: one op type is left unimplemented in the pinned
+#: config (§road:display-rendering), so nothing in it carries two.
+CROWDED_OPS = ["GradingPrimary", "GradingTone"]
 
 
 @pytest.fixture
@@ -46,13 +47,27 @@ def resolve(config):
     return resolve
 
 
+@pytest.fixture
+def crowded(config):
+    """A transform carrying two ops the compiler has no emitter for."""
+    group = OCIO.GroupTransform()
+    group.appendTransform(OCIO.GradingPrimaryTransform())
+    group.appendTransform(OCIO.GradingToneTransform())
+    return Resolved(
+        processor=config.getProcessor(group),
+        config_name=config.getName(),
+        config_uri=DEFAULT_CONFIG,
+        endpoints="crowded",
+    )
+
+
 def test_a_transform_the_compiler_emits_refuses_nothing(config):
     resolved = resolve_colorspaces(config, *PAIR, uri=DEFAULT_CONFIG)
     assert unsupported_ops(resolved.processor) == []
 
 
 def test_the_supported_set_is_read_off_the_registry():
-    assert supported_ops() == {name.removesuffix("Transform") for name in REGISTRY}
+    assert supported_ops() == set(REGISTRY)
     assert supported_ops() == {
         "Matrix",
         "Range",
@@ -61,6 +76,7 @@ def test_the_supported_set_is_read_off_the_registry():
         "Log",
         "LogCamera",
         "Lut1D",
+        "FixedFunction[REC2100_SURROUND]",
     }
 
 
@@ -72,7 +88,7 @@ def test_an_op_absent_from_the_registry_is_refused(config, monkeypatch):
     transform built from it can only be refused by reading the registry.
     """
     resolved = resolve_colorspaces(config, *PAIR, uri=DEFAULT_CONFIG)
-    monkeypatch.delitem(REGISTRY, "MatrixTransform")
+    monkeypatch.delitem(REGISTRY, "Matrix")
     assert "Matrix" in unsupported_ops(resolved.processor)
 
 
@@ -107,9 +123,10 @@ def test_a_refusal_an_op_list_cannot_see_is_raised_at_emission(config):
         compile_processor(resolved)
 
 
-def test_op_names_strip_the_transform_suffix(config):
+def test_op_names_are_the_labels_the_registry_is_keyed_on(config):
     processor = config.getProcessor("Log3G10 REDWideGamutRGB", "ACES2065-1")
     assert op_names(processor) == ["LogCamera", "Matrix"]
+    assert set(op_names(processor)) <= supported_ops()
 
 
 def test_op_label_reads_the_transform_rather_than_the_op_list():
@@ -120,10 +137,10 @@ def test_op_label_reads_the_transform_rather_than_the_op_list():
     assert op_label(style) == "FixedFunction[REC2100_SURROUND]"
 
 
-def test_every_unimplemented_op_is_named_not_only_the_first(resolve):
-    """The refusal cannot depend on op order. Emission would stop at the
-    fourth op and never reach the two behind it."""
-    assert unsupported_ops(resolve(*CROWDED_VIEW).processor) == CROWDED_OPS
+def test_every_unimplemented_op_is_named_not_only_the_first(crowded):
+    """The refusal cannot depend on op order. Emission would stop at the first
+    op and never reach the one behind it."""
+    assert unsupported_ops(crowded.processor) == CROWDED_OPS
 
 
 def test_the_refusal_names_the_ops_the_transform_and_its_endpoints(resolve):
@@ -136,9 +153,9 @@ def test_the_refusal_names_the_ops_the_transform_and_its_endpoints(resolve):
     assert "refused rather than approximated" in message
 
 
-def test_the_refusal_names_several_ops_in_one_message(resolve):
+def test_the_refusal_names_several_ops_in_one_message(crowded):
     with pytest.raises(UnsupportedOpError) as caught:
-        compile_processor(resolve(*CROWDED_VIEW))
+        compile_processor(crowded)
     for op in CROWDED_OPS:
         assert op in str(caught.value)
 

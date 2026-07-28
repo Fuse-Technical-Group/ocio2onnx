@@ -22,8 +22,15 @@ __all__ = ["UnsupportedOpError", "compile_processor", "op_names", "unsupported_o
 
 
 def op_names(processor) -> list[str]:
-    """The op types a processor is built from, as bare names, in order."""
-    return [emitters.op_name(t) for t in processor.createGroupTransform()]
+    """The ops a processor is built from, in order, as this compiler names them.
+
+    ``op_label``'s naming rather than the bare class name, so an op type
+    carrying two unrelated transforms is counted as the two it is. The census
+    marks a name emitted or refused against the same set the compiler selects
+    an emitter from, and a type half of which is emitted cannot be marked
+    either way (§spec:op-coverage).
+    """
+    return [emitters.op_label(t) for t in processor.createGroupTransform()]
 
 
 def unsupported_ops(processor) -> list[str]:
@@ -59,8 +66,9 @@ def compile_processor(resolved: Resolved) -> onnx.ModelProto:
     builder = GraphBuilder()
     tensor = INPUT
     for transform in resolved.processor.createGroupTransform():
-        # Every op has an emitter: the refusal above is what established it.
-        tensor = emitters.REGISTRY[type(transform).__name__].emit(
+        # Every op has an emitter: the refusal above is what established it,
+        # through this same key.
+        tensor = emitters.REGISTRY[emitters.op_label(transform)].emit(
             builder, transform, tensor
         )
 

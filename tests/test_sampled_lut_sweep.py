@@ -3,13 +3,18 @@ oracle (§spec:op-coverage, §spec:verification).
 
 The sampled-lookup acceptance test, and the counterpart to
 ``test_closed_form_sweep``: between them the two modules assert the whole
-partition. 111 transforms are closed-form, 20 carry a table, 28 refuse on
-`FixedFunction`, and 111 + 20 + 28 is the config. So "all 131
-non-``FixedFunction`` transforms verify" is asserted rather than sampled, and
-the 28 that refuse are shown to refuse on that op alone rather than on
-anything this compiler could have emitted.
+partition. 111 transforms are closed-form, 24 carry a table, 24 refuse on
+`ACES_OUTPUT_TRANSFORM_20`, and 111 + 24 + 24 is the config. So "all 135
+compilable transforms verify" is asserted rather than sampled, and the 24 that
+refuse are shown to refuse on that one style rather than on anything this
+compiler could have emitted.
 
-The sweep is over the 20 alone. The 111 are their own module's subject, and
+Four of the 24 are the HLG transforms `REC2100_SURROUND` unblocked
+(§spec:op-coverage). They land here rather than in the closed-form module
+because each pairs the surround adjustment with the HLG curve, which OCIO
+ships as a table.
+
+The sweep is over the 24 alone. The 111 are their own module's subject, and
 `ocio2onnx verify` runs all 159 once in ``test_cli``; a third full sweep would
 buy nothing but runtime.
 """
@@ -21,21 +26,21 @@ from ocio2onnx.compiler import op_names, unsupported_ops
 from ocio2onnx.emitters import supported_ops
 
 #: Measured across the pinned config (§spec:op-coverage): the transforms built
-#: from the six closed-form ops alone, those carrying a table, and those
-#: refused. Nothing else is left.
+#: from the closed-form ops alone, those carrying a table, and those refused.
+#: Nothing else is left.
 CLOSED_FORM_TRANSFORMS = 111
-SAMPLED_TRANSFORMS = 20
-REFUSED_TRANSFORMS = 28
+SAMPLED_TRANSFORMS = 24
+REFUSED_TRANSFORMS = 24
 TOTAL_TRANSFORMS = 159
 
-#: Of the 20, the ones whose ``Lut1D`` arrives inverse, which the compiler
+#: Of the 24, the ones whose ``Lut1D`` arrives inverse, which the compiler
 #: inverts at compile time rather than searching at run time
 #: (§spec:op-emission).
-INVERSE_TRANSFORMS = 8
+INVERSE_TRANSFORMS = 9
 
 #: The one op every refusal names. A refusal naming anything else would mean
 #: the compiler lost coverage it claims (§spec:op-coverage).
-REFUSED_OP = "FixedFunction"
+REFUSED_OP = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 
 
 def is_inverse(transform):
@@ -79,7 +84,7 @@ def test_the_sweep_reaches_both_directions(partition, config):
 
 
 def test_every_transform_carrying_a_table_verifies(partition, check):
-    """20 of 20, none skipped. A failure names the transform, the input, and
+    """24 of 24, none skipped. A failure names the transform, the input, and
     both values, so the reading at fault is identifiable without a debugger."""
     verified = 0
     failures = []
@@ -97,12 +102,8 @@ def test_every_transform_carrying_a_table_verifies(partition, check):
 def test_the_refused_transforms_refuse_on_one_op_and_it_is_not_emittable(partition):
     """The section's second criterion, stated as what is left rather than as
     what passed: nothing refuses on an op the compiler claims to emit, so the
-    28 are the display rendering work (§road:display-rendering) and nothing
+    24 are the ACES output transform (§road:aces-output-transform) and nothing
     else."""
-    named = {
-        op.split("[")[0]
-        for _, processor in partition[1]
-        for op in unsupported_ops(processor)
-    }
+    named = {op for _, processor in partition[1] for op in unsupported_ops(processor)}
     assert named == {REFUSED_OP}
     assert REFUSED_OP not in supported_ops()

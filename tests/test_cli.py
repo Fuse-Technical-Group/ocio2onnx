@@ -39,15 +39,19 @@ ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 #: A closed-form display view.
 OPEN_VIEW = ("sRGB - Display", "Un-tone-mapped")
 
+#: An HLG display view, which reaches a display through `REC2100_SURROUND`.
+HLG_VIEW = ("Rec.2100-HLG - Display", "Video (colorimetric)")
+
 #: The partition ``verify`` reproduces: the 111 closed-form transforms
-#: §spec:op-coverage measured, plus the 20 carrying a ``Lut1D`` over either
-#: domain in either direction. What is left refuses on ``FixedFunction``.
-VERIFIED = 131
-REFUSED = 28
+#: §spec:op-coverage measured, plus the 24 carrying a ``Lut1D`` over either
+#: domain in either direction. What is left refuses on the one
+#: ``FixedFunction`` style still deferred.
+VERIFIED = 135
+REFUSED = 24
 TOTAL = 159
 
-#: ``verify`` and the census reach the same 28 by different routes — one
-#: compiles, the other reads the op set — so their agreeing is a measured
+#: ``verify`` and the census reach the same refusal count by different routes
+#: — one compiles, the other reads the op set — so their agreeing is a measured
 #: fact about this config rather than an identity.
 
 
@@ -89,6 +93,18 @@ def test_compile_verify_holds_the_graph_against_the_cpu_processor(graph, capsys)
 def test_compile_takes_a_display_view(graph):
     display, view = OPEN_VIEW
     assert main(["compile", "--display", display, "--view", view, "-o", graph]) == OK
+    recorded = {entry.key: entry.value for entry in onnx.load(graph).metadata_props}
+    assert recorded[f"{METADATA_PREFIX}endpoints"].endswith(f"{display} / {view}")
+
+
+def test_an_hlg_display_view_compiles_and_agrees_with_the_cpu_processor(graph, capsys):
+    """`REC2100_SURROUND`'s surface (§spec:op-coverage): a consumer asking for
+    HLG output used to meet a refusal naming the cheap op rather than the
+    expensive one."""
+    display, view = HLG_VIEW
+    argv = ["compile", "--display", display, "--view", view, "-o", graph, "--verify"]
+    assert main(argv) == OK
+    assert "0 of" in capsys.readouterr().out
     recorded = {entry.key: entry.value for entry in onnx.load(graph).metadata_props}
     assert recorded[f"{METADATA_PREFIX}endpoints"].endswith(f"{display} / {view}")
 
@@ -242,7 +258,7 @@ def test_verify_partitions_the_whole_config_with_nothing_skipped(capsys):
     assert VERIFIED + REFUSED == TOTAL
 
     assert f"24  {ACES_STYLE}" in printed
-    assert "5  FixedFunction[REC2100_SURROUND]" in printed
+    assert "REC2100_SURROUND" not in printed
     assert "Lut1D" not in printed
     assert "worst deviation" in printed
 

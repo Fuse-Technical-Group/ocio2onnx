@@ -17,23 +17,27 @@ from ocio2onnx.addressing import DEFAULT_CONFIG, enumerate_transforms
 from ocio2onnx.compiler import unsupported_ops
 from ocio2onnx.emitters import supported_ops
 
-#: Measured across the pinned config (§spec:op-coverage).
+#: Measured across the pinned config (§spec:op-coverage). ``FixedFunction``
+#: appears as its two styles rather than as one type: they are separate
+#: workstreams, one emitted and one not, so a single row could be marked
+#: neither emitted nor refused.
 OP_CENSUS = {
     "Matrix": 284,
     "Range": 52,
     "Lut1D": 40,
-    "FixedFunction": 29,
     "Exponent": 26,
     "ExponentWithLinear": 24,
     "LogCamera": 24,
+    "FixedFunction[ACES_OUTPUT_TRANSFORM_20]": 24,
+    "FixedFunction[REC2100_SURROUND]": 5,
     "Log": 4,
 }
 TOTAL_TRANSFORMS = 159
 
-#: The census refuses by op type, so a transform whose ``Lut1D`` an emitter
-#: refuses for a parameter — a hue adjust, say — is not counted here. That
-#: refusal is ``ocio2onnx verify``'s, which compiles (§spec:op-coverage).
-REFUSED_TRANSFORMS = 28
+#: The census refuses by op, so a transform whose ``Lut1D`` an emitter refuses
+#: for a parameter — a hue adjust, say — is not counted here. That refusal is
+#: ``ocio2onnx verify``'s, which compiles (§spec:op-coverage).
+REFUSED_TRANSFORMS = 24
 NEEDS_LUT = 48
 
 #: The script SPEC.md §spec:op-coverage names by path.
@@ -70,20 +74,24 @@ def test_the_census_refuses_exactly_what_the_compiler_refuses(taken, config):
 
 
 def test_the_census_marks_the_ops_the_compiler_emits(taken):
+    """Every name the census counts is marked emitted or refused against the
+    set the compiler selects an emitter from, so the two halves of
+    ``FixedFunction`` are marked separately and correctly."""
     assert taken.supported == supported_ops()
     assert "Lut1D" in taken.supported
-    assert "FixedFunction" not in taken.supported
+    assert "FixedFunction[REC2100_SURROUND]" in taken.supported
+    assert "FixedFunction[ACES_OUTPUT_TRANSFORM_20]" not in taken.supported
+    assert set(taken.ops) - taken.supported == {
+        "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
+    }
 
 
 def test_refusals_group_by_op(taken):
-    """A transform carrying two unimplemented ops counts under both, so these
-    sum above the number of refused transforms."""
+    """One op is left, and it is the deferred one (§road:aces-output-transform).
+    A transform carrying two unimplemented ops would count under both."""
     grouped = dict(census.group_by_op(taken.refusals))
-    assert grouped == {
-        "FixedFunction[ACES_OUTPUT_TRANSFORM_20]": 24,
-        "FixedFunction[REC2100_SURROUND]": 5,
-    }
-    assert sum(grouped.values()) > REFUSED_TRANSFORMS
+    assert grouped == {"FixedFunction[ACES_OUTPUT_TRANSFORM_20]": 24}
+    assert sum(grouped.values()) == REFUSED_TRANSFORMS
 
 
 def test_the_report_prints_the_partition(capsys):

@@ -63,40 +63,86 @@ LogC4, CanonLog3, Apple Log and BMDFilm are all one parametric
 `LogCamera` op with different numbers, which OCIO supplies. Adding a
 camera is a config update.
 
-`FixedFunction` — the ACES output transform and the Rec.2100 surround
-adjustment — is **refused by name at compile**, not approximated. Of the
-159 transforms, 131 compile and 28 refuse; `Rec.2100-HLG - Display` is
-among the refusals, because HLG's surround adjustment is not a transfer
-curve.
+The other two are **refused by name at compile**, not approximated:
+`Lut1D`, and `FixedFunction` — the ACES output transform and the
+Rec.2100 surround adjustment. 48 transforms refuse; 28 of them carry a
+`FixedFunction` and the other 20 only a `Lut1D`. `Rec.2100-HLG - Display`
+is among the refusals, because HLG's surround adjustment is not a
+transfer curve — not because display views are unsupported. Stating the
+boundary as an op set is what keeps that case from being a surprise.
 
-Reproduce any of this for a config of your choice:
+Reproduce the split for a config of your choice:
 
 ```sh
-python tools/census.py [config-uri]
+ocio2onnx census [--config URI]
 ```
+
+## Usage
+
+Compile a color space pair or a display view. `--verify` holds the graph
+against OCIO's CPU processor before writing it:
+
+```sh
+ocio2onnx compile --from "Log3G10 REDWideGamutRGB" --to ACES2065-1 -o graph.onnx --verify
+ocio2onnx compile --display "sRGB - Display" --view "Un-tone-mapped" -o srgb.onnx
+```
+
+A transform carrying an op the compiler does not emit is refused, naming
+the op, the transform and its endpoints, and exits non-zero:
+
+```text
+FixedFunction[ACES_OUTPUT_TRANSFORM_20] is not emitted by this compiler, so 'ACES2065-1 -> sRGB - Display / ACES 2.0 - SDR 100 nits (Rec.709)' is refused rather than approximated
+```
+
+The same two entry points from Python:
+
+```python
+import onnx
+
+from ocio2onnx import compile_colorspaces, compile_display_view
+
+onnx.save(compile_colorspaces("Log3G10 REDWideGamutRGB", "ACES2065-1"), "graph.onnx")
+model = compile_display_view("sRGB - Display", "Un-tone-mapped", src="ACEScg")
+```
+
+Both take `config=` — a built-in URI or a file path — and raise
+`AddressError` for a name the config does not carry, `UnsupportedOpError`
+for an op the compiler does not emit. The graph is float32, three
+channels, with batch and spatial dimensions free, and records the config
+that produced it in its `metadata_props`.
 
 ## Live parameters
 
-A transform's dynamic properties — exposure, contrast, gamma, ASC CDL —
-compile to graph *inputs*, so a grade varies per frame without
+Planned. A transform's dynamic properties — exposure, contrast, gamma,
+ASC CDL — compile to graph *inputs*, so a grade varies per frame without
 recompiling. This is what a baked LUT cannot do, and it is why the emitted
-artifact is a graph rather than a table.
+artifact is a graph rather than a table. See [ROADMAP.md](ROADMAP.md).
 
 ## Verification
 
 OCIO's own CPU processor is the oracle. Every emitted graph is
-property-tested against it over a generated input lattice, including
-out-of-range and breakpoint values, and must agree within 2e-5 absolute
-or 1e-4 relative, whichever is looser. Both bounds are needed: these
-transforms cross zero, where a relative measure is meaningless, and they
-also reach 1e8, where an absolute one is. Coverage is asserted rather
-than sampled — every color space pair in a config either verifies or
-refuses with a named op.
+property-tested against it over a generated input lattice — out-of-range
+values, values either side of zero, and every op's breakpoints — and must
+agree within 2e-5 absolute or 1e-4 relative, whichever is looser. Both
+bounds are needed: these transforms cross zero, where a relative measure is
+meaningless, and they also reach 1e8, where an absolute one is.
+
+Coverage is asserted rather than sampled: every transform in a config
+either verifies or refuses with a named op, and none are skipped.
+
+```sh
+ocio2onnx verify [--config URI]
+```
+
+Against the pinned ACES Studio config: **111 verified, 48 refused, 0
+failed, 0 skipped, 159 total**.
 
 ## Status
 
-Early. The specification and roadmap are written; the compiler is not yet
-implemented. See [ROADMAP.md](ROADMAP.md).
+The closed-form compiler ships, with the oracle harness. `Lut1D` and the
+two `FixedFunction` styles are refused by name rather than approximated;
+they are the next sections of [ROADMAP.md](ROADMAP.md), along with live
+parameters.
 
 ## License
 

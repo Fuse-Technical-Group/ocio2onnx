@@ -3,6 +3,9 @@ on:
   pull_request:
   merge_group:
 
+permissions:
+  contents: read
+
 # Validate governance docs against the symphonize notation contract:
 # markdownlint, SPEC status lines, slug-suffix heading grammar, and
 # §-reference resolution. The contract is maintained upstream; pinning

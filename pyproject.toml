@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ocio2onnx"
+version = "0.1.0"
+description = "Compile an OpenColorIO transform into an ONNX graph."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    # Op coverage was measured against OCIO 2.5 (§spec:op-coverage). The
+    # range pins the major line; §road:distribution narrows it.
+    "opencolorio>=2.4,<3",
+    "onnx>=1.17",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# The oracle harness executes an emitted graph, which needs a runtime.
+# Compiling does not, so this stays out of the runtime dependency set.
+verify = ["onnxruntime>=1.19"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+ocio2onnx = "ocio2onnx.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ocio2onnx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

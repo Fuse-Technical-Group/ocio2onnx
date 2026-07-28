@@ -29,7 +29,7 @@ time. OCIO remains the authority for what a transform *is*; this project
 only changes what it can be executed by.
 
 ## What the compiler emits §spec:emitted-graph
-*Status: not started*
+*Status: complete*
 
 A single ONNX graph per transform: a channels-first float image tensor in,
 the same shape out, with spatial dimensions free so one graph serves every
@@ -62,7 +62,7 @@ consumers who want OCIO in-process, where this project serves consumers
 who want the transform as a portable artifact.
 
 ## Op coverage §spec:op-coverage
-*Status: not started*
+*Status: in progress*
 
 Coverage is measured, not assumed. Across
 `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` — every color space in both
@@ -147,10 +147,12 @@ adjustment is `REC2100_SURROUND` rather than a transfer curve. A consumer
 wanting plain HLG encoding is served; one wanting the ACES HLG display
 rendering is not. Stating the boundary as an op set rather than as "view
 transforms are unsupported" is what keeps that case from being a
-surprise. `tools/census.py` reports the split for any config.
+surprise. `ocio2onnx census` reports the split for any config, against the
+op set the compiler actually implements rather than a second list beside
+it; `tools/census.py` is a shim over the same code.
 
 ## How ops emit §spec:op-emission
-*Status: not started*
+*Status: in progress*
 
 Every op emits as ONNX arithmetic over parameters read from OCIO's
 transform introspection. `Matrix` is a 1×1 convolution, `Range` a clamp
@@ -201,7 +203,7 @@ defining a transform, which §spec:non-goals forbids, and would read as
 error against the oracle.
 
 ## Verification §spec:verification
-*Status: not started*
+*Status: complete*
 
 OCIO's CPU processor is the oracle. For every transform the compiler
 claims to support, a test generates an input lattice — including values
@@ -214,10 +216,17 @@ purely relative bound is meaningless where these transforms cross zero: a
 matrix row that nearly cancels yields values at which any relative measure
 explodes while the absolute error sits on the float32 noise floor. A
 purely absolute bound fails at the other end, where an input at 65504
-legitimately produces outputs around 1e8. The floor itself belongs to the
-executor rather than the compiler — `Pow` differs between ONNX Runtime and
-OCIO in the last digits — so a tighter bound would measure a math library
-instead of the compiler's reading of the config.
+legitimately produces outputs around 1e8.
+
+**The oracle runs with fast math off.** OCIO's default CPU optimization
+includes `OPTIMIZATION_FAST_LOG_EXP_POW`, an approximate `pow`, `log`, and
+`exp` whose error exceeds this tolerance. Left on, it measures a math
+library rather than the compiler's reading of the config: 110 of the 111
+closed-form transforms verify against OCIO's fast path, and all 111 verify
+against its accurate one. Which optimization flags the oracle runs under
+is a correctness decision, not a tuning knob — the reference has to be
+OCIO's accurate arithmetic, or a compiler error and an oracle error are
+indistinguishable.
 
 *Why an oracle rather than reference constants*: the failure mode here is
 not a wrong constant, it is a subtly wrong *interpretation* — a direction
@@ -250,7 +259,7 @@ rather than values, so they arrive with a tensor-valued input or not at
 all.
 
 ## Precision §spec:precision
-*Status: not started*
+*Status: complete*
 
 The graph is emitted at float32 and declares that. A log or exponential
 chain evaluated at float16 loses accuracy where the curve is steepest,
@@ -259,10 +268,10 @@ for. A consumer whose executor selects reduced precision by default must
 pin float32 for these graphs or accept a documented, measured error
 against the oracle (§spec:verification).
 
-float32 is not exact either, and the residual is not the compiler's to
-remove: `Pow` and the transcendentals differ between executors and OCIO in
-their last digits, which is what sets the verification tolerance rather
-than any choice made here (§spec:verification).
+float32 is not exact either, but the residual that showed up in practice
+was not float32's. It came from the oracle's own approximate `pow`, and
+clearing that flag removes it (§spec:verification). The caution above is
+about the consumer's executor, not about the reference.
 
 ## Non-goals §spec:non-goals
 *Status: complete*

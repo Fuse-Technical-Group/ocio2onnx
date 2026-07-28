@@ -3,6 +3,11 @@ on:
   pull_request:
   merge_group:
 
+# The python job runs repository code (pytest) on pull_request, so give the
+# token nothing beyond the checkout it needs.
+permissions:
+  contents: read
+
 jobs:
   markdownlint:
     runs-on: ubuntu-latest
@@ -14,8 +19,18 @@ jobs:
         with:
           globs: "*.md"
 
-  # No shellcheck job: this repo carries no shell scripts yet. Restore the
-  # one from backlit_molecule's quality.yml when tools/*.sh appears.
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned to an exact release: setup-uv stopped publishing floating
+      # major tags at v8, so `@v9` does not exist and `@v7` would be mutable.
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+      # Pinned to 3.12: opencolorio publishes no wheel for 3.13+.
+      - run: bash tools/ci.sh
+
   #
   # SPEC status lines, slug-suffix heading grammar, and §-reference
   # resolution are validated by the symphonize notation contract in

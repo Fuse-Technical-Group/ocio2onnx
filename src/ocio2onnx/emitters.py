@@ -30,6 +30,19 @@ from ocio2onnx.builder import GraphBuilder
 #: nothing a consumer can feed the graph reaches it.
 UNBOUNDED = 1e30
 
+#: How OCIO's negative-value styles are named, with the enum prefix dropped.
+MIRROR = "MIRROR"
+PASS_THRU = "PASS_THRU"
+
+
+class UnsupportedOpError(NotImplementedError):
+    """An op, or a parameter of one, the compiler does not emit.
+
+    Raised at the op that stopped emission. §road:named-refusal replaces this
+    with a pre-emission check that names the transform and its endpoints too.
+    """
+
+
 #: An emitter appends nodes for one transform and returns its output tensor.
 Emit = Callable[[GraphBuilder, Any, str], str]
 
@@ -86,6 +99,36 @@ def _is_inverse(transform: Any) -> bool:
     rather than the exotic one (§spec:op-coverage).
     """
     return str(transform.getDirection()).endswith("INVERSE")
+
+
+def _channels(values: Any) -> list[float]:
+    """The first three of an OCIO per-channel parameter.
+
+    OCIO reports four; alpha bypasses the graph (§spec:emitted-graph), so the
+    fourth is dropped here rather than carried through the arithmetic.
+    """
+    return [float(value) for value in values][:CHANNELS]
+
+
+def _negative_style(transform: Any, supported: tuple[str, ...]) -> str:
+    """How this op treats inputs below zero, refused if unimplemented.
+
+    OCIO's four styles differ only below zero, which is precisely where they
+    are hardest to notice being wrong. Treating an unrecognised one as the
+    nearest implemented style would emit a graph that disagrees with the
+    config over exactly the inputs the style exists to govern, so it is
+    refused instead (§spec:op-coverage).
+    """
+    style = (
+        str(transform.getNegativeStyle()).rsplit(".", 1)[-1].removeprefix("NEGATIVE_")
+    )
+    if style not in supported:
+        op = type(transform).__name__.removesuffix("Transform")
+        raise UnsupportedOpError(
+            f"{op} negative style {style} is not emitted by this compiler; "
+            f"it emits {', '.join(supported)}"
+        )
+    return style
 
 
 @register("MatrixTransform")
@@ -174,3 +217,39 @@ def emit_range(builder: GraphBuilder, transform: Any, x: str) -> str:
         builder.mul(y, builder.scalar("range_scale", scale)),
         builder.scalar("range_offset", offset),
     )
+
+
+def exponent_breakpoints(transform: Any) -> list[float]:
+    """Zero, where the negative-value handling switches."""
+    return [0.0]
+
+
+@register("ExponentTransform", breakpoints=exponent_breakpoints)
+def emit_exponent(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """A power, with the sign put back the way the style asks.
+
+    The inverse of ``x**g`` is ``x**(1/g)``, so an inverse op reciprocates the
+    gamma and takes the same path.
+    """
+    gamma = _channels(transform.getValue())
+    if _is_inverse(transform):
+        gamma = [1.0 / value for value in gamma]
+    style = _negative_style(transform, (MIRROR, PASS_THRU))
+    return _signed_power(
+        builder, x, builder.per_channel("exponent_gamma", gamma), style
+    )
+
+
+def _signed_power(builder: GraphBuilder, x: str, exponent: str, style: str) -> str:
+    """``|x| ** g`` with the negative half restored per ``style``.
+
+    ONNX ``Pow`` yields NaN for a negative base, and ``Where`` evaluates both
+    branches, so a raw ``Pow`` would poison the result whichever branch is
+    selected. Taking ``Abs`` first keeps the base non-negative; the sign is
+    put back afterwards.
+    """
+    magnitude = builder.pow(builder.op("Abs", [x]), exponent)
+    if style == MIRROR:
+        return builder.mul(builder.op("Sign", [x]), magnitude)
+    below = builder.op("Less", [x, builder.scalar("zero", 0.0)])
+    return builder.where(below, x, magnitude)

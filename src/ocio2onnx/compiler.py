@@ -12,14 +12,11 @@ import onnx
 from ocio2onnx import emitters
 from ocio2onnx.addressing import Resolved
 from ocio2onnx.builder import INPUT, GraphBuilder
+from ocio2onnx.emitters import UnsupportedOpError
 
-
-class UnsupportedOpError(NotImplementedError):
-    """An op the compiler does not emit.
-
-    Raised at the op that stopped emission. §road:named-refusal replaces this
-    with a pre-emission check that names the transform and its endpoints too.
-    """
+#: Re-exported: an emitter refuses a parameter it has no path for, and the
+#: refusal a caller catches is the same one whichever raised it.
+__all__ = ["UnsupportedOpError", "compile_processor"]
 
 
 def compile_processor(resolved: Resolved) -> onnx.ModelProto:

@@ -233,11 +233,15 @@ def compare(
     )
 
 
-def verify(resolved: Resolved) -> Comparison:
-    """Compile a resolved request and hold the graph against the oracle."""
+def verify(resolved: Resolved, model: onnx.ModelProto | None = None) -> Comparison:
+    """Hold a graph against the oracle, compiling one if none is given.
+
+    A caller holding the model it is about to write hands it over, so what is
+    verified is the artifact rather than a second compilation of the request.
+    """
     samples = lattice(resolved.processor)
     return compare(
         cpu_reference(resolved.processor, samples),
-        run_graph(compile_processor(resolved), samples),
+        run_graph(compile_processor(resolved) if model is None else model, samples),
         samples,
     )

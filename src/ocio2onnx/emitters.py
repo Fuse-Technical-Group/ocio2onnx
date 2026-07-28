@@ -1420,6 +1420,12 @@ def emit_aces_output_transform(builder: GraphBuilder, transform: Any, x: str) ->
 
     # ... and on into lightness, colourfulness, and hue. A non-positive
     # achromatic response has no hue to report, and OCIO answers black.
+    #
+    # A NaN pixel takes that same arm, where OCIO's ``<= 0`` test does not and
+    # its rendering returns NaN. The departure is deliberate: a NaN hue floors
+    # to a NaN table index, ``Cast`` of which is implementation-defined, and a
+    # ``Gather`` no bound covers is worse than a black pixel. Every other
+    # comparison in this op keeps OCIO's NaN behaviour exactly (`_std_max`).
     coloured = builder.op("Greater", [achromatic, zero])
     degrees = builder.div(
         builder.mul(

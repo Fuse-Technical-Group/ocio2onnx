@@ -90,6 +90,7 @@ against OCIO's CPU processor before writing it:
 ocio2onnx compile --from "Log3G10 REDWideGamutRGB" --to ACES2065-1 -o graph.onnx --verify
 ocio2onnx compile --display "sRGB - Display" --view "Un-tone-mapped" -o srgb.onnx
 ocio2onnx compile --display "Rec.2100-HLG - Display" --view "Video (colorimetric)" -o hlg.onnx
+ocio2onnx compile --display "sRGB - Display" --view "ACES 2.0 - SDR 100 nits (Rec.709)" -o aces.onnx
 ```
 
 A transform carrying an op the compiler does not emit is refused, naming

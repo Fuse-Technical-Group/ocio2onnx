@@ -21,6 +21,10 @@ from ocio2onnx.emitters import REGISTRY, UnsupportedOpError, op_label, supported
 #: The pair the compiler emits.
 PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 
+#: A pair whose op list holds nothing unimplemented, and whose ``Lut1D``
+#: arrives inverse — a refusal only the emitter can raise.
+INVERSE_LUT_PAIR = ("ACES2065-1", "Apple Log")
+
 #: The display view the compiler refuses, and the style that blocks it.
 ACES_VIEW = ("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
 ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
@@ -85,13 +89,13 @@ def test_the_refusal_names_the_fixed_function_style(resolve):
     assert unsupported_ops(resolve(*ACES_VIEW).processor) == [ACES_STYLE]
 
 
-def test_a_refusal_an_op_list_cannot_see_is_raised_at_emission(resolve):
+def test_a_refusal_an_op_list_cannot_see_is_raised_at_emission(config):
     """``Lut1D`` is registered, so the op list passes this transform; the
-    emitter refuses its half domain on reading the op. A caller meets one
+    emitter refuses its direction on reading the op. A caller meets one
     refusal, whichever layer raised it."""
-    resolved = resolve("Rec.2100-PQ - Display", "Un-tone-mapped")
+    resolved = resolve_colorspaces(config, *INVERSE_LUT_PAIR, uri=DEFAULT_CONFIG)
     assert unsupported_ops(resolved.processor) == []
-    with pytest.raises(UnsupportedOpError, match="half domain"):
+    with pytest.raises(UnsupportedOpError, match="inverse"):
         compile_processor(resolved)
 
 

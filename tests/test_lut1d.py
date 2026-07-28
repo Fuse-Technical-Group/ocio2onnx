@@ -1,18 +1,24 @@
-"""``Lut1D`` emits a gather and a lerp over a uniform table (§spec:op-emission).
+"""``Lut1D`` emits a gather and a lerp over a table (§spec:op-emission).
 
-Forward and uniform-domain only. A half domain indexes by a float16 bit
-pattern rather than by a coordinate, and an inverse op runs the table
-backwards; both are refused here and lifted by their own workstreams, so a
-transform carrying one is an answer rather than a crash.
+Forward only. An inverse op runs the table backwards, is refused here, and is
+lifted by its own workstream, so a transform carrying one is an answer rather
+than a crash.
 
-The index is OCIO's: ``clip(x, 0, 1) * (length - 1)``, floored to a slot and
-interpolated across it. OCIO's CPU processor interpolates rather than snapping
-to the nearer slot, so a sub-slot input is what separates this emitter from a
-nearest-neighbour lookup, and one test drives it there deliberately.
+Two domains reach the same gather, and only the index separates them. A
+uniform table's index is OCIO's ``clip(x, 0, 1) * (length - 1)``. A
+half-domain table's is the bit pattern of the input rounded to float16, which
+standard ONNX cannot reinterpret and so reconstructs in float arithmetic the
+way OCIO's own shaders reconstruct it: an exponent from ``floor(log2)``, a
+mantissa fraction, a linear case below 2**-14 where a half is denormal, and a
+sign offset applied to the slot rather than to the position inside it.
+
+OCIO's CPU processor interpolates across slots rather than snapping to the
+nearer one, so a sub-slot input is what separates this emitter from a
+nearest-neighbour lookup, and one test per domain drives it there deliberately.
 
 The upper index is ``i0 + (1 if frac > 0 else 0)`` rather than
-``min(i0 + 1, length - 1)``. At ``x >= 1`` the index is the last slot and
-``i0 + 1`` reads past the end; the ``frac > 0`` form keeps the top of the
+``min(i0 + 1, length - 1)``. At ``x >= 1`` the uniform index is the last slot
+and ``i0 + 1`` reads past the end; the ``frac > 0`` form keeps the top of the
 table in range without a second clamp.
 """
 
@@ -24,7 +30,7 @@ from onnx import numpy_helper
 from ocio2onnx import emitters
 from ocio2onnx.builder import INPUT, GraphBuilder
 from ocio2onnx.emitters import UnsupportedOpError
-from ocio2onnx.oracle import cpu_reference, lattice, run_graph
+from ocio2onnx.oracle import compare, cpu_reference, lattice, run_graph
 
 LUT1D = "Lut1DTransform"
 REFERENCE = "ACES2065-1"
@@ -37,13 +43,44 @@ UNIFORM_SPACES = (
     "CanonLog3 CinemaGamut D55",
 )
 
+#: Five pairs whose forward direction carries a half-domain table: two display
+#: encodings, one camera log, and the two ADX densities.
+HALF_DOMAIN_PAIRS = (
+    (REFERENCE, "Rec.2100-PQ - Display"),
+    (REFERENCE, "ST2084-P3-D65 - Display"),
+    ("Apple Log", REFERENCE),
+    ("ADX10", REFERENCE),
+    ("ADX16", REFERENCE),
+)
+
 #: Measured across the pinned config (§spec:op-coverage).
 HALF_DOMAIN_OPS = 34
+HALF_DOMAIN_FORWARD_OPS = 28
+HALF_DOMAIN_INVERSE_OPS = 6
 UNIFORM_OPS = 6
 FORWARD_OPS = 31
 INVERSE_OPS = 9
 HALF_DOMAIN_LENGTH = 65536
 UNIFORM_LENGTH = 4096
+
+#: Every half value in bit-pattern order, which is the order a half-domain
+#: table is indexed in.
+HALF_SLOTS = np.arange(HALF_DOMAIN_LENGTH, dtype=np.uint16).view(np.float16)
+
+#: The last slot a finite input reaches, at 65504. Above it the bit patterns
+#: are infinity and NaN.
+LAST_FINITE_SLOT = 31743
+
+#: The first normal slot, at 2**-14. Below it a half is denormal and its slot
+#: is linear in the magnitude rather than a binade plus a mantissa.
+FIRST_NORMAL_SLOT = 1024
+
+#: What the sign bit adds to a slot index.
+SIGN_SLOTS = 32768
+
+#: Enough slots to walk every binade without sampling all 65536 of them, and
+#: coprime with 1024 so the walk does not land on the same mantissa each time.
+SLOT_STRIDE = 331
 
 #: Short enough to read in a failure, long enough that a slot is not the whole
 #: domain.
@@ -91,6 +128,56 @@ def table_of(model):
     return numpy_helper.to_array(initializer)
 
 
+def between_slots(slots, fractions=(0.25, 0.5, 0.75)):
+    """Inputs strictly inside the slot each index opens.
+
+    A half-domain table is indexed by a rounded float16, so every input that
+    is not itself a half falls between two entries. That is the ordinary case
+    rather than the exotic one, and it is where a nearest-neighbour lookup
+    parts company with the reference.
+    """
+    slots = np.asarray(slots)
+    low = HALF_SLOTS[slots].astype(np.float32)
+    high = HALF_SLOTS[slots + 1].astype(np.float32)
+    return np.concatenate([low + np.float32(f) * (high - low) for f in fractions])
+
+
+def walk_slots(first, last, offset=0):
+    """Slot indices striding from ``first`` to ``last``, in one half of the
+    table."""
+    return np.arange(first, last, SLOT_STRIDE) + offset
+
+
+@pytest.fixture(scope="session")
+def half_domain_lut(op_in):
+    """The half-domain table ``Rec.2100-PQ - Display`` is implemented as.
+
+    Odd-symmetric about zero, so an input that reads the wrong half of the
+    table comes back with the wrong sign rather than merely the wrong value.
+    """
+    return op_in(LUT1D, *HALF_DOMAIN_PAIRS[0])
+
+
+@pytest.fixture
+def check_at(config, compile_bare, row):
+    """Hold one transform's graph against the CPU processor at chosen inputs.
+
+    The oracle's lattice is a sweep. These tests need particular inputs — a
+    position inside a half slot, a denormal — that no sweep lands on.
+    """
+
+    def check_at(transform, values):
+        processor = config.getProcessor(transform)
+        samples = row(*np.asarray(values, dtype=np.float32).tolist())
+        return compare(
+            cpu_reference(processor, samples),
+            run_graph(compile_bare(processor), samples),
+            samples,
+        )
+
+    return check_at
+
+
 def test_the_registry_carries_lut1d():
     assert LUT1D in emitters.REGISTRY
 
@@ -114,6 +201,18 @@ def test_the_pinned_configs_directions_are_what_the_specification_counted(config
     ]
     assert inverse.count(True) == INVERSE_OPS
     assert inverse.count(False) == FORWARD_OPS
+
+
+def test_the_half_domain_ops_split_by_direction_as_the_coverage_claims(config_ops):
+    """The half-domain workstream reaches the forward ops alone, so the split
+    is what it moves rather than the 34."""
+    inverse = [
+        str(transform.getDirection()).endswith("INVERSE")
+        for transform in config_ops(LUT1D)
+        if transform.getInputHalfDomain()
+    ]
+    assert inverse.count(False) == HALF_DOMAIN_FORWARD_OPS
+    assert inverse.count(True) == HALF_DOMAIN_INVERSE_OPS
 
 
 def test_every_lut1d_in_the_pinned_config_is_linear_and_unadjusted(config_ops):
@@ -180,6 +279,119 @@ def test_the_top_of_the_table_is_not_read_past(config, compile_bare, op_in, row)
     assert got == pytest.approx([last] * 3, rel=1e-6)
 
 
+@pytest.mark.parametrize(("src", "dst"), HALF_DOMAIN_PAIRS)
+def test_a_transform_carrying_a_half_domain_forward_lut_verifies(
+    src, dst, config, check
+):
+    result = check(config.getProcessor(src, dst), f"{src} -> {dst}")
+    assert result.ok, str(result)
+    assert result.compared > 0
+
+
+@pytest.mark.parametrize(("src", "dst"), HALF_DOMAIN_PAIRS)
+def test_the_half_domain_lut_op_alone_verifies(src, dst, op_in, check_transform):
+    result = check_transform(op_in(LUT1D, src, dst))
+    assert result.ok, str(result)
+
+
+def test_an_input_between_two_half_slots_verifies_against_the_cpu_processor(
+    half_domain_lut, check_at
+):
+    """The acceptance criterion for this domain, and the reason it is its own
+    test: a nearest-neighbour lookup agrees with the reference at every half
+    and disagrees everywhere else, so a sweep that happened to land on halves
+    would pass one."""
+    result = check_at(
+        half_domain_lut,
+        between_slots(walk_slots(FIRST_NORMAL_SLOT, LAST_FINITE_SLOT)),
+    )
+    assert result.ok, str(result)
+    assert result.compared > 0
+
+
+def test_the_graph_interpolates_across_a_half_slot_rather_than_snapping_to_one(
+    half_domain_lut, config, compile_bare, row
+):
+    """The one assertion that pins the answer between two entries rather than
+    at one of them. Half 14336 is 0.5, and its neighbour 0.500488281."""
+    table = emitters.lut1d_table(half_domain_lut)
+    low, high = float(table[14336, 0]), float(table[14337, 0])
+    assert low < high
+
+    processor = config.getProcessor(half_domain_lut)
+    samples = row(0.5 * (float(HALF_SLOTS[14336]) + float(HALF_SLOTS[14337])))
+    want = float(cpu_reference(processor, samples).ravel()[0])
+    got = float(run_graph(compile_bare(processor), samples).ravel()[0])
+
+    assert low < got < high
+    assert got == pytest.approx(want, rel=1e-5)
+    assert got == pytest.approx(0.5 * (low + high), rel=1e-6)
+
+
+def test_the_denormal_branch_verifies(half_domain_lut, check_at):
+    """Below 2**-14 a half's exponent field is zero and its slot is linear in
+    the magnitude. The oracle's near-zero samples reach the first few slots;
+    these reach the rest of the branch and both sides of its join."""
+    result = check_at(
+        half_domain_lut,
+        np.concatenate(
+            [
+                between_slots(walk_slots(0, FIRST_NORMAL_SLOT)),
+                np.array(
+                    [1e-9, 1.49e-8, 2.98e-8, 2.0**-15, 2.0**-14, 2.0**-13],
+                    dtype=np.float32,
+                ),
+            ]
+        ),
+    )
+    assert result.ok, str(result)
+
+
+def test_a_negative_input_verifies(half_domain_lut, check_at):
+    """The sign moves the slot, not the position inside it, so a sign read
+    wrong lands in the other half of the table."""
+    result = check_at(
+        half_domain_lut,
+        between_slots(walk_slots(0, LAST_FINITE_SLOT, offset=SIGN_SLOTS)),
+    )
+    assert result.ok, str(result)
+
+
+def test_negative_zero_reads_the_negative_half_of_the_table(
+    half_domain_lut, config, compile_bare, row
+):
+    """OCIO reads the sign bit rather than comparing against zero, and the two
+    zeros index different entries. ``-0.0 < 0.0`` is false, so a comparison
+    returns the positive entry — the right magnitude with the wrong sign, and
+    small enough here that the oracle's absolute tolerance would admit it."""
+    table = emitters.lut1d_table(half_domain_lut)
+    assert float(table[SIGN_SLOTS, 0]) == -float(table[0, 0]) != 0.0
+
+    processor = config.getProcessor(half_domain_lut)
+    samples = row(-0.0)
+    assert float(cpu_reference(processor, samples).ravel()[0]) < 0.0
+    got = float(run_graph(compile_bare(processor), samples).ravel()[0])
+    assert got == pytest.approx(float(table[SIGN_SLOTS, 0]), rel=1e-6)
+
+
+def test_a_table_that_overflows_float32_lerps_to_the_finite_limit_not_to_nan(
+    config, compile_bare, op_in, row
+):
+    """``Apple Log -> ref`` decodes to more than float32 holds, and its table
+    reports infinity from slot 18898 up. OCIO's CPU processor renders those
+    entries as the finite limit, so the graph must too: a lerp between two
+    infinite entries is ``inf - inf``, and the whole top of the domain would
+    come back NaN."""
+    lut = op_in(LUT1D, "Apple Log", REFERENCE)
+    assert np.isinf(lut.getValue(LAST_FINITE_SLOT)[0])
+
+    processor = config.getProcessor(lut)
+    samples = row(11.64, 12.0, 100.0, 1000.0, 65504.0)
+    got = run_graph(compile_bare(processor), samples).ravel()[:5]
+    assert np.isfinite(got).all()
+    assert got == pytest.approx(cpu_reference(processor, samples).ravel()[:5], rel=1e-6)
+
+
 def test_a_per_channel_table_verifies(check_transform):
     """The only cover for the per-channel path: no op in the pinned config
     takes it."""
@@ -223,22 +435,31 @@ def test_a_default_interpolation_is_emitted_rather_than_refused(config):
     assert emit(lut)
 
 
-def test_a_half_domain_lut_is_refused(config_ops):
-    """The 34 half-domain ops in the pinned config, and a bare one."""
+def test_a_forward_half_domain_lut_is_emitted_rather_than_refused(config_ops):
+    """The refusal this workstream lifted. Every forward half-domain op in the
+    pinned config emits, and so does a bare one."""
     half = [
-        transform for transform in config_ops(LUT1D) if transform.getInputHalfDomain()
+        transform
+        for transform in config_ops(LUT1D)
+        if transform.getInputHalfDomain()
+        and not str(transform.getDirection()).endswith("INVERSE")
     ]
-    assert len(half) == HALF_DOMAIN_OPS
-    for transform in (half[0], synthetic(HALF_DOMAIN_LENGTH, inputHalfDomain=True)):
-        with pytest.raises(UnsupportedOpError, match="half domain"):
-            emit(transform)
+    assert len(half) == HALF_DOMAIN_FORWARD_OPS
+    assert emit(half[0])
+    assert emit(synthetic(HALF_DOMAIN_LENGTH, inputHalfDomain=True))
 
 
 def test_an_inverse_lut_is_refused(op_in):
-    """Both a bare inverse op and the one the config supplies."""
+    """Both domains, in both the bare and the configured form. Direction is
+    the one shape left, and its own workstream."""
     bare = synthetic()
     bare.setDirection(OCIO.TRANSFORM_DIR_INVERSE)
-    for transform in (bare, op_in(LUT1D, REFERENCE, UNIFORM_SPACES[0])):
+    transforms = (
+        bare,
+        op_in(LUT1D, REFERENCE, UNIFORM_SPACES[0]),
+        op_in(LUT1D, REFERENCE, "Apple Log"),
+    )
+    for transform in transforms:
         with pytest.raises(UnsupportedOpError, match="inverse"):
             emit(transform)
 
@@ -264,8 +485,16 @@ def test_raw_half_outputs_are_refused():
         emit(lut)
 
 
-def test_the_declared_breakpoints_are_the_domain_edges():
+def test_a_uniform_lut_declares_its_domain_edges():
     assert emitters.breakpoints(synthetic()) == [0.0, 1.0]
+
+
+def test_a_half_domain_lut_declares_the_branches_its_index_has():
+    """Not the unit interval: a half domain does not clamp at 0 or 1, it spans
+    the float16 line. Zero is where the sign offset switches and 2**-14 is
+    where the denormal case joins the normal one."""
+    lut = synthetic(HALF_DOMAIN_LENGTH, inputHalfDomain=True)
+    assert emitters.breakpoints(lut) == [0.0, 2.0**-14, -(2.0**-14)]
 
 
 def test_a_uniform_lut_widens_the_lattice_at_its_domain_edges(config, op_in):

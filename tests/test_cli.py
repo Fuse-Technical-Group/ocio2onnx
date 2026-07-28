@@ -40,17 +40,17 @@ ACES_STYLE = "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
 OPEN_VIEW = ("sRGB - Display", "Un-tone-mapped")
 
 #: The partition ``verify`` reproduces today: the 111 closed-form transforms
-#: §spec:op-coverage measured, plus the 3 whose ``Lut1D`` is uniform and
-#: forward. The half-domain and inverse workstreams take this to 131.
-VERIFIED = 114
-REFUSED = 45
+#: §spec:op-coverage measured, plus the 12 whose ``Lut1D`` is forward, over
+#: either domain. The inverse workstream takes this to 131.
+VERIFIED = 123
+REFUSED = 36
 TOTAL = 159
 
-#: How the two refusals the ``Lut1D`` emitter raises are counted. The census
-#: cannot see either: both are parameters of a registered op, so it refuses
-#: the ``FixedFunction`` transforms alone where ``verify`` refuses 45.
-HALF_DOMAIN_REFUSALS = "14  Lut1D over a half domain"
-INVERSE_REFUSALS = "3  an inverse Lut1D"
+#: How the one refusal the ``Lut1D`` emitter still raises is counted. The
+#: census cannot see it: direction is a parameter of a registered op, so the
+#: census refuses the ``FixedFunction`` transforms alone where ``verify``
+#: refuses 36.
+INVERSE_REFUSALS = "8  an inverse Lut1D"
 CENSUS_REFUSED = 28
 
 
@@ -246,7 +246,6 @@ def test_verify_partitions_the_whole_config_with_nothing_skipped(capsys):
 
     assert f"24  {ACES_STYLE}" in printed
     assert "5  FixedFunction[REC2100_SURROUND]" in printed
-    assert HALF_DOMAIN_REFUSALS in printed
     assert INVERSE_REFUSALS in printed
     assert "worst deviation" in printed
 

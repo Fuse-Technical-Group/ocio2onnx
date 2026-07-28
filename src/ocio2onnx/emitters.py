@@ -46,6 +46,38 @@ LINEAR = "LINEAR"
 #: the unit interval, and the index is a position in it.
 LUT1D_DOMAIN = (0.0, 1.0)
 
+#: The smallest normal half, ``2**-14``. At and below it a half's exponent
+#: field is zero and its slot is linear in the magnitude; above it the slot is
+#: a binade plus a mantissa. Both readings give 1024 at the join, so the index
+#: is continuous across it.
+HALF_NORMAL_MIN = 2.0**-14
+
+#: The largest finite half. An input above it indexes the top finite slot,
+#: which is what OCIO's own shader clamps to.
+HALF_MAX = 65504.0
+
+#: Slots per binade: ``2**10``, for a half's ten mantissa bits.
+HALF_BINADE = 1024
+
+#: What ``floor(log2(x))`` is shifted by to reach a half's exponent field —
+#: 15 for the bias, which already counts the denormal binade below it.
+HALF_EXPONENT_BIAS = 15.0
+
+#: What the sign bit adds to a slot index.
+HALF_SIGN = 32768.0
+
+#: What a denormal magnitude is scaled by to reach its slot: ``2**24``, which
+#: is ``HALF_BINADE / HALF_NORMAL_MIN``.
+HALF_DENORMAL_SCALE = HALF_BINADE / HALF_NORMAL_MIN
+
+#: The finite limit a ``Lut1D`` entry is held at. OCIO reports an entry beyond
+#: float32 as an infinity but its CPU processor renders the finite limit —
+#: measured on ``Apple Log``, whose decode overflows from slot 18898 up, where
+#: the reference interpolates towards this value rather than towards infinity.
+#: The graph has to match: a lerp between two infinite entries is ``inf - inf``
+#: and would return NaN across the whole top of the domain.
+LUT1D_ENTRY_MAX = float(np.finfo(np.float32).max)
+
 #: The interpolations OCIO renders a 1D LUT linearly. ``DEFAULT`` is not a
 #: convenience synonym: every 1D LUT OCIO loads from a file reports it, and
 #: OCIO resolves it to linear, so refusing it would refuse them all.
@@ -600,29 +632,27 @@ def lut1d_table(transform: Any) -> np.ndarray:
     which they do for all 40 ops in the pinned config. The emitter reads them
     and compares rather than assuming it: a per-channel table is a shape
     another config can take (§spec:non-goals).
+
+    An entry past float32's range is clamped to ``LUT1D_ENTRY_MAX`` rather
+    than left at the infinity OCIO reports, because that is where OCIO's CPU
+    processor holds it.
     """
-    return np.array(
+    values = np.array(
         [transform.getValue(i) for i in range(transform.getLength())],
-        dtype=np.float32,
+        dtype=np.float64,
     )
+    return np.clip(values, -LUT1D_ENTRY_MAX, LUT1D_ENTRY_MAX).astype(np.float32)
 
 
 def _refuse_unemitted_lut1d(transform: Any) -> None:
     """Refuse the ``Lut1D`` shapes this compiler has no path for.
 
-    Each would change the result rather than degrade it. A half domain indexes
-    by the bit pattern of the input rounded to float16 rather than by a
-    coordinate, and an inverse op runs the table backwards; both are their own
-    workstreams (§spec:op-emission). The remaining three redefine what a slot
-    means, and none occurs in the pinned config — so, following
-    ``_negative_style``, an unrecognised one is refused rather than
-    approximated by the reading this emitter does implement.
+    Each would change the result rather than degrade it. An inverse op runs
+    the table backwards, which is its own workstream (§spec:op-emission). The
+    remaining three redefine what a slot means, and none occurs in the pinned
+    config — so, following ``_negative_style``, an unrecognised one is refused
+    rather than approximated by the reading this emitter does implement.
     """
-    if transform.getInputHalfDomain():
-        raise UnsupportedOpError(
-            "Lut1D over a half domain is not emitted by this compiler; it "
-            "emits a uniform domain"
-        )
     if _is_inverse(transform):
         raise UnsupportedOpError(
             "an inverse Lut1D is not emitted by this compiler; it emits the "
@@ -648,42 +678,30 @@ def _refuse_unemitted_lut1d(transform: Any) -> None:
 
 
 def lut1d_breakpoints(transform: Any) -> list[float]:
-    """The domain edges, where the clamp engages.
+    """Where the index switches branches.
 
-    Not the slot boundaries between them: there are thousands, they would
+    A uniform table's are its domain edges, where the clamp engages. A half
+    domain has no such edges — it spans the float16 line rather than the unit
+    interval — and its branches are elsewhere: zero, where the sign offset
+    switches, and ``±2**-14``, where the denormal reading joins the normal one.
+
+    Not the slot boundaries in between: there are tens of thousands, they would
     swamp the lattice, and the lerp is continuous across every one. A
     breakpoint is declared where a misreading would put a sample on the wrong
     branch, and a slot boundary has no branch.
     """
+    if transform.getInputHalfDomain():
+        return [0.0, HALF_NORMAL_MIN, -HALF_NORMAL_MIN]
     return list(LUT1D_DOMAIN)
 
 
-@register("Lut1DTransform", breakpoints=lut1d_breakpoints)
-def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
-    """A gather and a lerp over a uniform table (§spec:op-emission).
-
-    The index is OCIO's: ``clip(x, 0, 1) * (length - 1)``, floored to a slot
-    and interpolated across it. OCIO's CPU processor interpolates rather than
-    snapping to the nearer slot, so the lerp is the op rather than a
-    refinement of it.
-
-    The upper index is ``i0 + (1 if frac > 0 else 0)`` rather than
-    ``min(i0 + 1, length - 1)``. At ``x >= 1`` the index is the last slot and
-    ``i0 + 1`` would read past the end. The half-domain workstream needs the
-    same form for a second reason — a top slot there can hold ``inf``, and
-    ``0 * inf`` is NaN — so one rule serves both.
-
-    ``Gather`` over a rank-1 table with rank-4 indices returns the indices'
-    shape, so the whole op runs at ``(N, 3, H, W)`` with no reshaping. Three
-    coinciding channels share one table; three that disagree flatten into one
-    channel-major table read through a per-channel base offset, so both paths
-    are the same gather.
-    """
-    _refuse_unemitted_lut1d(transform)
-    table = lut1d_table(transform)
-    length = table.shape[0]
-
-    index = builder.mul(
+def _uniform_index(
+    builder: GraphBuilder, x: str, length: int
+) -> tuple[str, str | None]:
+    """Where an input falls in a uniform table, as OCIO indexes one:
+    ``clip(x, 0, 1) * (length - 1)``. No slot offset — the position is the
+    whole index."""
+    position = builder.mul(
         builder.op(
             "Clip",
             [
@@ -694,10 +712,131 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
         ),
         builder.scalar("lut1d_scale", float(length - 1)),
     )
-    floor = builder.op("Floor", [index])
-    frac = builder.sub(index, floor)
+    return position, None
+
+
+def _half_domain_index(builder: GraphBuilder, x: str) -> tuple[str, str]:
+    """Where an input falls in a half-domain table, as a slot offset and a
+    position within a binade (§spec:op-emission).
+
+    A half-domain table is indexed by the bit pattern of the input rounded to
+    float16. Standard ONNX has no bit-reinterpreting cast, so the index is
+    reconstructed in float arithmetic — which is what OCIO's own shaders do,
+    for the same reason: they target GLSL 1.2 and ES 1.0, which have no
+    bitwise integer ops.
+
+    The reconstruction is OCIO's ``computePos``. Above ``2**-14`` a half's
+    slot is ``1024 * (exponent + 15) + 1024 * mantissa``; at and below it the
+    half is denormal and its slot is ``magnitude * 2**24``. Both give 1024 at
+    the join, so the two readings meet without a step.
+
+    Two details are not decoration:
+
+    The ``Log`` argument is clipped to ``[2**-14, 65504]``. ``Where`` selects
+    rather than branches, so the discarded normal reading is still evaluated
+    at zero, where ``log(0)`` is ``-inf``, ``2**-inf`` is 0, and ``0/0`` is
+    NaN. Clipping makes it finite everywhere, as ``emit_exponent_with_linear``
+    clips its ``Pow`` bases.
+
+    The binade and the sign are returned as a slot offset rather than folded
+    into the position. Both are exact integers below ``2**16``, so their sum
+    is exact in float32 and the fraction that drives the lerp keeps its full
+    precision. Added before the floor, a value near 64511 would resolve only
+    to about 1/256, quantizing the fraction to a few thousandths of a slot.
+    """
+    zero = builder.scalar("zero", 0.0)
+    magnitude = builder.op("Abs", [x])
+    normal_min = builder.scalar("half_normal_min", HALF_NORMAL_MIN)
+    normal = builder.op("Greater", [magnitude, normal_min])
+
+    clipped = builder.op(
+        "Clip", [magnitude, normal_min, builder.scalar("half_max", HALF_MAX)]
+    )
+    exponent = builder.op(
+        "Floor",
+        [
+            builder.mul(
+                builder.op("Log", [clipped]),
+                builder.scalar("half_log2", 1.0 / math.log(2.0)),
+            )
+        ],
+    )
+    binade_low = builder.pow(builder.scalar("two", 2.0), exponent)
+    mantissa = builder.div(builder.sub(clipped, binade_low), binade_low)
+    slots = builder.scalar("half_binade", float(HALF_BINADE))
+
+    position = builder.where(
+        normal,
+        builder.mul(mantissa, slots),
+        builder.mul(
+            magnitude, builder.scalar("half_denormal_scale", HALF_DENORMAL_SCALE)
+        ),
+    )
+    binade = builder.where(
+        normal,
+        builder.mul(
+            builder.add(
+                exponent, builder.scalar("half_exponent_bias", HALF_EXPONENT_BIAS)
+            ),
+            slots,
+        ),
+        zero,
+    )
+    # OCIO reads the sign bit, so -0.0 indexes the negative half of the table
+    # and ``Less(x, 0)`` would not put it there. A value and its reciprocal
+    # share a sign bit and never both round to zero, so the smaller of the two
+    # is negative exactly when the sign bit is set: at -0.0 the reciprocal is
+    # -inf, and where the reciprocal is denormal enough for an executor to
+    # flush it, the input itself still carries the sign.
+    signed = builder.op("Min", [x, builder.op("Reciprocal", [x])])
+    sign = builder.where(
+        builder.op("Less", [signed, zero]),
+        builder.scalar("half_sign", HALF_SIGN),
+        zero,
+    )
+    return position, builder.to_int64(builder.add(binade, sign))
+
+
+@register("Lut1DTransform", breakpoints=lut1d_breakpoints)
+def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """A gather and a lerp over a table (§spec:op-emission).
+
+    The two domains differ only in how the index is arrived at, so each
+    computes one and the gather is shared. An index is a slot offset and a
+    position: the position is floored to a slot and interpolated across it,
+    because OCIO's CPU processor interpolates rather than snapping to the
+    nearer slot, and the offset is added afterwards in integer space.
+
+    The upper index is ``i0 + (1 if frac > 0 else 0)`` rather than
+    ``min(i0 + 1, length - 1)``. At ``x >= 1`` the uniform index is the last
+    slot and ``i0 + 1`` would read past the end.
+
+    ``Gather`` over a rank-1 table with rank-4 indices returns the indices'
+    shape, so the whole op runs at ``(N, 3, H, W)`` with no reshaping. Three
+    coinciding channels share one table; three that disagree flatten into one
+    channel-major table read through a per-channel base offset, so both paths
+    are the same gather.
+
+    A half-domain table is emitted flat, all 65536 entries of it. OCIO's GPU
+    path folds the index into a 4096-by-17 texture because texture widths cap
+    below 65536; an ONNX initializer has no such limit, so neither the packing
+    nor its stride carries over.
+    """
+    _refuse_unemitted_lut1d(transform)
+    table = lut1d_table(transform)
+    length = table.shape[0]
+
+    if transform.getInputHalfDomain():
+        position, offset = _half_domain_index(builder, x)
+    else:
+        position, offset = _uniform_index(builder, x, length)
+
+    floor = builder.op("Floor", [position])
+    frac = builder.sub(position, floor)
 
     lower = builder.to_int64(floor)
+    if offset is not None:
+        lower = builder.add(lower, offset)
     upper = builder.add(
         lower,
         builder.to_int64(builder.op("Greater", [frac, builder.scalar("zero", 0.0)])),

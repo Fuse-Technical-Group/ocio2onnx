@@ -1139,6 +1139,37 @@ def _atan2(builder: GraphBuilder, y: str, x: str) -> str:
     return builder.where(origin, zero, builder.add(angle, quadrant))
 
 
+def _compress_unsigned(builder: GraphBuilder, x: str) -> str:
+    """``x ** 0.42 / (27.13 + x ** 0.42)`` for a non-negative ``x``.
+
+    The tone scale runs the same compression on a value it has already floored
+    at zero, so the sign handling stays at the callers rather than being
+    applied twice.
+    """
+    magnitude = builder.pow(x, builder.scalar("cone_exponent", aces2.CONE_EXPONENT))
+    return builder.div(
+        magnitude,
+        builder.add(builder.scalar("cone_offset", aces2.CONE_OFFSET), magnitude),
+    )
+
+
+def _expand_unsigned(builder: GraphBuilder, limited: str) -> str:
+    """The inverse of ``_compress_unsigned``, for an argument already held
+    below ``CONE_LIMIT``.
+
+    Which minimum holds it there is the caller's: ``_cone_expand`` takes ONNX
+    ``Min`` of a magnitude and the tone scale takes ``std::min`` of a signed
+    response, and the two differ at NaN (`_std_min`).
+    """
+    return builder.pow(
+        builder.div(
+            builder.mul(builder.scalar("cone_offset", aces2.CONE_OFFSET), limited),
+            builder.sub(builder.scalar("one", 1.0), limited),
+        ),
+        builder.scalar("inv_cone_exponent", aces2.INV_CONE_EXPONENT),
+    )
+
+
 def _cone_compress(builder: GraphBuilder, x: str) -> str:
     """The post-adaptation cone response compression, sign restored.
 
@@ -1147,15 +1178,9 @@ def _cone_compress(builder: GraphBuilder, x: str) -> str:
     fractional exponent is NaN — the same reason OCIO wraps an unsigned helper
     in a ``copysign`` rather than raising the signed value directly.
     """
-    magnitude = builder.pow(
-        builder.op("Abs", [x]), builder.scalar("cone_exponent", aces2.CONE_EXPONENT)
-    )
     return builder.mul(
         builder.op("Sign", [x]),
-        builder.div(
-            magnitude,
-            builder.add(builder.scalar("cone_offset", aces2.CONE_OFFSET), magnitude),
-        ),
+        _compress_unsigned(builder, builder.op("Abs", [x])),
     )
 
 
@@ -1170,16 +1195,7 @@ def _cone_expand(builder: GraphBuilder, x: str) -> str:
     limited = builder.op(
         "Min", [builder.op("Abs", [x]), builder.scalar("cone_limit", aces2.CONE_LIMIT)]
     )
-    return builder.mul(
-        builder.op("Sign", [x]),
-        builder.pow(
-            builder.div(
-                builder.mul(builder.scalar("cone_offset", aces2.CONE_OFFSET), limited),
-                builder.sub(builder.scalar("one", 1.0), limited),
-            ),
-            builder.scalar("inv_cone_exponent", aces2.INV_CONE_EXPONENT),
-        ),
-    )
+    return builder.mul(builder.op("Sign", [x]), _expand_unsigned(builder, limited))
 
 
 def _matrix3(builder: GraphBuilder, hint: str, matrix: np.ndarray, x: str) -> str:
@@ -1204,8 +1220,13 @@ def _channel(builder: GraphBuilder, x: str, index: int) -> str:
 
 
 def _sample(builder: GraphBuilder, table: str, index: str) -> str:
-    """One hue-indexed table entry per pixel."""
-    return builder.op("Gather", [table, builder.to_int64(index)], axis=0)
+    """One hue-indexed table entry per pixel, at an index already cast.
+
+    The cast is the caller's because one index reads several tables: the gamut
+    compression samples four columns at the same two entries, and a cast here
+    would emit eight casts for those two indices (`_gamut_compress`).
+    """
+    return builder.op("Gather", [table, index], axis=0)
 
 
 def _toe(builder: GraphBuilder, x: str, limit: str, k1_in: str, k2_in: str) -> str:
@@ -1255,13 +1276,12 @@ def _solve_axis_intersect(
     scaled = builder.div(colourfulness, slope_gain)
     a = builder.div(scaled, focus)
     one = builder.scalar("one", 1.0)
-    four = builder.scalar("four", 4.0)
+    four_a = builder.mul(builder.scalar("four", 4.0), a)
     minus_two = builder.scalar("minus_two", -2.0)
 
     def solve(b: str, c: str, combine) -> str:
         root = builder.op(
-            "Sqrt",
-            [builder.sub(builder.mul(b, b), builder.mul(builder.mul(four, a), c))],
+            "Sqrt", [builder.sub(builder.mul(b, b), builder.mul(four_a, c))]
         )
         return builder.div(builder.mul(minus_two, c), combine(b, root))
 
@@ -1303,7 +1323,11 @@ def _boundary_intersect(
 
 
 def _hue_interval(
-    builder: GraphBuilder, hue: str, position: str, params: aces2.OutputTransform
+    builder: GraphBuilder,
+    hue: str,
+    position: str,
+    table: str,
+    params: aces2.OutputTransform,
 ) -> str:
     """The upper index of the hue table interval holding ``hue``.
 
@@ -1318,7 +1342,6 @@ def _hue_interval(
     bracket clamps, and a clamped loop returns having tested nothing.
     """
     low, high = params.search_range
-    table = builder.constant("aces2_hues", params.hues)
     zero = builder.scalar("zero", 0.0)
     one = builder.scalar("one", 1.0)
     half = builder.scalar("half", 0.5)
@@ -1335,13 +1358,22 @@ def _hue_interval(
     )
     index = position
 
-    for _ in range(max(1, math.ceil(math.log2(high - low)) + 1)):
+    steps = max(1, math.ceil(math.log2(high - low)) + 1)
+    for step in range(steps):
         running = builder.op("Less", [builder.add(lower, one), upper])
-        above = builder.op("Greater", [hue, _sample(builder, table, index)])
-        lower = builder.where(builder.op("And", [running, above]), index, lower)
+        above = builder.op(
+            "Greater", [hue, _sample(builder, table, builder.to_int64(index))]
+        )
         upper = builder.where(
             builder.op("And", [running, builder.op("Not", [above])]), index, upper
         )
+        if step + 1 == steps:
+            # Only ``upper`` is read below, so the last step's bracket and
+            # midpoint are nodes nothing consumes. The two are updated after
+            # ``upper`` rather than before it so this arm can drop them; they
+            # read the same ``index`` either way.
+            break
+        lower = builder.where(builder.op("And", [running, above]), index, lower)
         index = builder.where(
             running,
             builder.op("Floor", [builder.mul(builder.add(lower, upper), half)]),
@@ -1478,14 +1510,15 @@ def emit_aces_output_transform(builder: GraphBuilder, transform: Any, x: str) ->
     sine = builder.op("Sin", [radians])
 
     # The reach table is uniform at one entry per degree, so its interval is
-    # the hue's own integer part and costs no search.
+    # the hue's own integer part and costs no search. That entry is also where
+    # the hue table's own search starts, so it is taken once and passed on.
     position = builder.op("Floor", [hue])
     reach = builder.constant("aces2_reach", params.reach)
-    reach_index = builder.add(position, one)
+    uniform_index = builder.add(position, one)
     reach_max = _lerp(
         builder,
-        _sample(builder, reach, reach_index),
-        _sample(builder, reach, builder.add(reach_index, one)),
+        _sample(builder, reach, builder.to_int64(uniform_index)),
+        _sample(builder, reach, builder.to_int64(builder.add(uniform_index, one))),
         builder.sub(hue, position),
     )
 
@@ -1500,7 +1533,7 @@ def emit_aces_output_transform(builder: GraphBuilder, transform: Any, x: str) ->
         params,
     )
     lightness_out, colourfulness_out = _gamut_compress(
-        builder, toned, compressed, hue, position, reach_max, params
+        builder, toned, compressed, hue, uniform_index, reach_max, params
     )
 
     # Back out through the limiting gamut's half of the model. The hue is
@@ -1523,8 +1556,7 @@ def emit_aces_output_transform(builder: GraphBuilder, transform: Any, x: str) ->
                             builder.mul(
                                 lightness_out,
                                 builder.scalar(
-                                    "aces2_inv_lightness_scale",
-                                    1.0 / float(aces2.J_SCALE),
+                                    "aces2_inv_lightness_scale", aces2.INV_J_SCALE
                                 ),
                             ),
                             builder.scalar("aces2_inv_cz", aces2.INV_CZ),
@@ -1552,12 +1584,11 @@ def _chroma_norm(
     two = builder.scalar("two", 2.0)
     three = builder.scalar("three", 3.0)
     four = builder.scalar("four", 4.0)
-    cos2 = builder.sub(
-        builder.mul(two, builder.mul(cosine, cosine)), builder.scalar("one", 1.0)
-    )
+    cos_squared = builder.mul(cosine, cosine)
+    cos2 = builder.sub(builder.mul(two, cos_squared), builder.scalar("one", 1.0))
     sin2 = builder.mul(two, builder.mul(cosine, sine))
     cos3 = builder.sub(
-        builder.mul(four, builder.mul(cosine, builder.mul(cosine, cosine))),
+        builder.mul(four, builder.mul(cosine, cos_squared)),
         builder.mul(three, cosine),
     )
     sin3 = builder.sub(
@@ -1599,13 +1630,7 @@ def _tone_scale(
         builder.scalar("cone_limit", aces2.CONE_LIMIT),
     )
     luminance = builder.div(
-        builder.pow(
-            builder.div(
-                builder.mul(builder.scalar("cone_offset", aces2.CONE_OFFSET), limited),
-                builder.sub(builder.scalar("one", 1.0), limited),
-            ),
-            builder.scalar("inv_cone_exponent", aces2.INV_CONE_EXPONENT),
-        ),
+        _expand_unsigned(builder, limited),
         builder.scalar("aces2_adaptation", aces2.F_L_N),
     )
 
@@ -1631,9 +1656,9 @@ def _tone_scale(
         builder.scalar("aces2_tone_white", tone.n_r),
     )
 
-    response = builder.pow(
+    response = _compress_unsigned(
+        builder,
         builder.mul(displayed, builder.scalar("aces2_adaptation", aces2.F_L_N)),
-        builder.scalar("cone_exponent", aces2.CONE_EXPONENT),
     )
     return builder.mul(
         builder.op("Sign", [achromatic]),
@@ -1641,12 +1666,7 @@ def _tone_scale(
             builder.scalar("aces2_lightness_scale", aces2.J_SCALE),
             builder.pow(
                 builder.mul(
-                    builder.div(
-                        response,
-                        builder.add(
-                            builder.scalar("cone_offset", aces2.CONE_OFFSET), response
-                        ),
-                    ),
+                    response,
                     builder.scalar("aces2_inv_white_response", aces2.INV_A_W_J),
                 ),
                 builder.scalar("aces2_cz", aces2.CZ),
@@ -1732,7 +1752,7 @@ def _gamut_compress(
     lightness: str,
     colourfulness: str,
     hue: str,
-    position: str,
+    uniform_index: str,
     reach_max: str,
     params: aces2.OutputTransform,
 ) -> tuple[str, str]:
@@ -1753,20 +1773,21 @@ def _gamut_compress(
     one = builder.scalar("one", 1.0)
     limit = builder.scalar("aces2_limit_lightness", params.limit_lightness)
 
-    upper = _hue_interval(builder, hue, builder.add(position, one), params)
-    lower = builder.sub(upper, one)
     hues = builder.constant("aces2_hues", params.hues)
-    hue_low = _sample(builder, hues, lower)
-    weight = builder.div(
-        builder.sub(hue, hue_low), builder.sub(_sample(builder, hues, upper), hue_low)
-    )
+    upper = _hue_interval(builder, hue, uniform_index, hues, params)
+    # Every table below is read at the same two entries, so the interval is
+    # cast once and each column is two gathers.
+    high_index = builder.to_int64(upper)
+    low_index = builder.to_int64(builder.sub(upper, one))
+
+    def interval(table: str) -> tuple[str, str]:
+        """One table's entries either side of the hue."""
+        return _sample(builder, table, low_index), _sample(builder, table, high_index)
+
+    hue_low, hue_high = interval(hues)
+    weight = builder.div(builder.sub(hue, hue_low), builder.sub(hue_high, hue_low))
     cusp_lightness, cusp_colourfulness, upper_hull_gamma_inv = (
-        _lerp(
-            builder,
-            _sample(builder, column, lower),
-            _sample(builder, column, upper),
-            weight,
-        )
+        _lerp(builder, *interval(column), weight)
         for column in (
             builder.constant("aces2_cusp_lightness", params.cusps[:, 0]),
             builder.constant("aces2_cusp_colourfulness", params.cusps[:, 1]),
@@ -1826,9 +1847,10 @@ def _gamut_compress(
     axis = _solve_axis_intersect(
         builder, lightness, colourfulness, focus, limit, slope_gain
     )
-    direction = builder.where(
-        builder.op("Less", [axis, focus]), axis, builder.sub(limit, axis)
-    )
+    # How much lightness sits above the intercept, which is both the distance
+    # the vector travels when it leaves upwards and the upper hull's own extent.
+    above_axis = builder.sub(limit, axis)
+    direction = builder.where(builder.op("Less", [axis, focus]), axis, above_axis)
     slope = builder.div(
         builder.mul(direction, builder.sub(axis, focus)),
         builder.mul(focus, slope_gain),
@@ -1850,7 +1872,7 @@ def _gamut_compress(
         ),
         _boundary_intersect(
             builder,
-            builder.sub(limit, axis),
+            above_axis,
             builder.op("Neg", [slope]),
             upper_hull_gamma_inv,
             builder.sub(limit, cusp_lightness),

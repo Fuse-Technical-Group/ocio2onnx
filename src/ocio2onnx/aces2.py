@@ -73,8 +73,10 @@ ADAPTING_LUMINANCE = F32(100.0)
 BACKGROUND_LUMINANCE = F32(20.0)
 SURROUND = (F32(0.9), F32(0.59), F32(0.9))
 
-#: Lightness is reported on [0, 100].
+#: Lightness is reported on [0, 100], and the model is run backwards as often
+#: as forwards, so the reciprocal is named alongside it.
 J_SCALE = F32(100.0)
+INV_J_SCALE = F32(1.0) / J_SCALE
 
 #: The post-adaptation cone response compression, ``x**0.42 / (27.13 +
 #: x**0.42)``, and its inverse. The inverse holds its argument below 0.99
@@ -421,14 +423,11 @@ def _cycle(corners: list[np.ndarray]) -> list[np.ndarray]:
     increasing across the whole table.
     """
     lowest = min(range(CUSP_CORNERS), key=lambda i: corners[i][2])
-    ordered = [None] + [
-        corners[(i + lowest) % CUSP_CORNERS].copy() for i in range(CUSP_CORNERS)
-    ]
-    ordered[0] = ordered[CUSP_CORNERS].copy()
-    ordered.append(ordered[1].copy())
-    ordered[0][2] -= HUE_LIMIT
-    ordered[-1][2] += HUE_LIMIT
-    return ordered
+    rotated = [corners[(i + lowest) % CUSP_CORNERS].copy() for i in range(CUSP_CORNERS)]
+    below, above = rotated[-1].copy(), rotated[0].copy()
+    below[2] -= HUE_LIMIT
+    above[2] += HUE_LIMIT
+    return [below, *rotated, above]
 
 
 def _limiting_corners(model: Appearance, peak_luminance: F32) -> list[np.ndarray]:
@@ -452,7 +451,7 @@ def _reach_corners(
     response instead of on lightness because the two are monotonically related
     and the response costs one power fewer.
     """
-    limit = np.power(limit_lightness * (F32(1.0) / J_SCALE), INV_CZ, dtype=np.float32)
+    limit = np.power(limit_lightness * INV_J_SCALE, INV_CZ, dtype=np.float32)
     found = []
     for index in range(CUSP_CORNERS):
         direction = _cube_corner(index)

@@ -89,6 +89,8 @@ def test_the_supported_set_is_read_off_the_registry():
         "Lut1D",
         "FixedFunction[REC2100_SURROUND]",
         "FixedFunction[ACES_OUTPUT_TRANSFORM_20]",
+        "ExposureContrast",
+        "CDL",
     }
 
 

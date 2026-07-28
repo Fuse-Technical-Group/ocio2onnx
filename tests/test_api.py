@@ -51,10 +51,18 @@ def test_the_package_exports_what_it_says_it_does():
         "__version__",
         "compile_colorspaces",
         "compile_display_view",
+        "parameters",
         "verify",
     }
     for name in ocio2onnx.__all__:
         assert getattr(ocio2onnx, name) is not None
+
+
+def test_a_graph_without_a_grade_carries_no_live_parameters():
+    """``parameters`` answers off the artifact, so a caller asks what it can
+    vary rather than assuming (§spec:dynamic-properties). Nothing in the pinned
+    config carries a dynamic property, so this pair's answer is empty."""
+    assert ocio2onnx.parameters(compile_colorspaces(*PAIR)) == {}
 
 
 def test_the_re_exports_are_the_originals():

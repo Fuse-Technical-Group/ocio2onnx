@@ -31,6 +31,7 @@ from ocio2onnx.addressing import (
     resolve_colorspaces,
     resolve_display_view,
 )
+from ocio2onnx.builder import parameters
 from ocio2onnx.compiler import compile_processor, unsupported_ops
 from ocio2onnx.emitters import UnsupportedOpError
 
@@ -172,7 +173,25 @@ def _compile(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
 
     onnx.save(model, args.output)
     print(f"wrote {args.output}")
+    _report_parameters(model)
     return OK
+
+
+def _report_parameters(model: onnx.ModelProto) -> None:
+    """Say what the graph takes beyond the image (§spec:dynamic-properties).
+
+    A live parameter is the capability that distinguishes an emitted graph from
+    a baked table, and it is invisible in the file a caller just wrote — an
+    input backed by a default looks like any other initializer until something
+    names it. Silent where the transform carries none.
+    """
+    live = parameters(model)
+    if not live:
+        return
+    width = max(len(name) for name in live)
+    print("\nlive parameters (bind to vary per frame; unbound reads the default):")
+    for name, default in live.items():
+        print(f"  {name:{width}}  {', '.join(f'{value:g}' for value in default)}")
 
 
 def _verify(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:

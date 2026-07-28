@@ -371,7 +371,7 @@ every sample is checked one way or the other, the only quantity left worth
 asserting is that the finite kind occurred at all.
 
 ## Dynamic properties §spec:dynamic-properties
-*Status: not started*
+*Status: in progress*
 
 OCIO exposes seven dynamic property types — `EXPOSURE`, `CONTRAST`,
 `GAMMA`, and four `GRADING_*` families — plus ASC CDL as slope, offset,
@@ -383,11 +383,68 @@ This is what a baked LUT cannot do, and it is the reason the emitted
 artifact is a graph rather than a table: a live grade is the same compiled
 transform with its parameters left free.
 
-Scalar and per-channel properties — exposure, contrast, gamma, and the CDL
-quartet — map to graph inputs directly. The curve-shaped `GRADING_*`
-families do not, and are deferred: their parameters are control points
-rather than values, so they arrive with a tensor-valued input or not at
-all.
+The scalar and per-channel properties emit. `ExposureContrast` carries
+`EXPOSURE`, `CONTRAST`, and `GAMMA`, spelled as OCIO's own property types
+spell them; a CDL carries `CDL_SLOPE`, `CDL_OFFSET`, `CDL_POWER`, and
+`CDL_SATURATION`. The curve-shaped `GRADING_*` families are deferred: their
+parameters are control points rather than values, so they arrive with a
+tensor-valued input or not at all, and until then they refuse by the same
+mechanism as any unimplemented op (§spec:op-coverage).
+
+**The value decides what is live; OCIO's flag decides only what the value
+cannot.** OCIO's declaration governs its own run-time plumbing — one dynamic
+property of each type per processor, extras dropped with a warning — and a
+graph has neither the limit nor the need for it. An input left unbound reads
+the default the artifact carries, so a knob nobody turns costs a consumer
+nothing, and each op keeps its own default rather than one of them being
+discarded. A CDL is the case that settles it: OCIO declares no dynamic property
+for one at all, and a CDL is the grade this section exists for. So a grade
+sitting off its identity proves its own op exists and emits its knobs whatever
+OCIO declares.
+
+A grade sitting *at* its identity is the exception, because it is not
+distinguishable from an absent op and OCIO removes it. There the declaration is
+the only signal left, and OCIO preserves a declared-dynamic op through that
+removal — so an identity grade stays live exactly when its author said it was
+meant to be driven. Catching the undeclared case would mean carrying every
+identity matrix and range in every config into the graph, which is a wider
+price than the knob is worth.
+
+**Liveness is decided before the compiler sees the op, so the optimizer is part
+of this section.** OCIO reports the ops it would run, not the ops the config
+declares, and its rewrites can spend a live parameter before there is anything
+to attach an input to: at a unit power a CDL becomes a matrix and the grade
+arrives as coefficients. That is the primary — slope, offset, and saturation at
+a unit power — which is the commonest CDL there is and precisely the grade a
+consumer means to drive. `OPTIMIZATION_SIMPLIFY_OPS` is therefore cleared. It
+costs nothing to clear, the op count across the pinned config being unchanged,
+and the rewrite it suppresses is not value-preserving in any case: OCIO applies
+it at `OPTIMIZATION_LOSSLESS`, where it drops a clamping CDL's output clamp and
+answers 1.111 for an input the op answers 1.0 on. Which flags are set is a
+correctness decision rather than a tuning knob, the same reading as
+§spec:verification's, and the set is pinned by test.
+
+**The graph inverts what OCIO pre-inverts.** An inverse op's parameters are
+still the forward grade OCIO reports — the knob is the CDL's slope, not the
+reciprocal an inverse multiplies by — so the reciprocals a static emitter
+would fold at compile time become arithmetic in the graph. So do the
+reference's guards, which are not tidy and are load bearing: OCIO floors a
+CDL parameter at 0.01 before reciprocating it, so a crushed channel inverts
+to 100 rather than to an infinity, and it floors `contrast * gamma` at 0.001
+— *before* the reciprocal for the pivoted exposure styles and *after* it for
+the logarithmic one, which sends a negative product to 1000 in the first case
+and to 0.001 in the second.
+
+**The reference bounds what a sweep can establish.** OCIO's
+`ExposureContrast` renderer uses an approximate power that
+`OPTIMIZATION_FAST_LOG_EXP_POW` does not govern, so §spec:verification's
+remedy of clearing a flag does not reach it. Its base error is around 1e-5
+relative, which two things multiply: the inverse's exponent of
+`1 / (contrast * gamma)`, past the tolerance once the product falls below
+about 0.09; and cancellation downstream, where a CDL saturation of 1.3 after
+the op turns 1.3e-5 into 5e-4 on one sample of the lattice. Both are the
+reference's residual rather than the graph's, and both are pinned by tests so
+that an OCIO release which removes them is visible rather than silent.
 
 ## Precision §spec:precision
 *Status: complete*

@@ -60,8 +60,22 @@ OCIO_ERRORS = (OCIO.Exception, OCIO.ExceptionMissingFile)
 #: other way: cleared, OCIO's inverse ``Lut1D`` renderer parts company with its
 #: own fast path at 5 samples, and the fast path is the one that agrees with
 #: the encoding.
+#:
+#: ``OPTIMIZATION_SIMPLIFY_OPS`` is cleared because it decides which parameters
+#: stay live (§spec:dynamic-properties). It rewrites a graded op whose values it
+#: can express another way — a CDL at a unit power becomes a matrix, and the
+#: grade arrives as coefficients no consumer can turn. That is the primary, the
+#: commonest CDL there is. The rewrite is also not value-preserving, and OCIO
+#: applies it at ``OPTIMIZATION_LOSSLESS``: an inverse clamping CDL answers 1.0
+#: for an input of 1 on a lifted channel as an op, and 1.111 once rewritten,
+#: because the rewrite drops the style's output clamp. So the op is the correct
+#: reading of the two, and clearing the flag costs nothing: it folds only graded
+#: ops, so across the pinned config, which carries none, no op count moves.
+#: ``tests/test_cdl.py`` pins the clamp and ``tests/test_oracle.py`` the cost.
 OPTIMIZATION_FLAGS = OCIO.OptimizationFlags(
-    OCIO.OPTIMIZATION_DEFAULT.value & ~OCIO.OPTIMIZATION_FAST_LOG_EXP_POW.value
+    OCIO.OPTIMIZATION_DEFAULT.value
+    & ~OCIO.OPTIMIZATION_FAST_LOG_EXP_POW.value
+    & ~OCIO.OPTIMIZATION_SIMPLIFY_OPS.value
 )
 
 

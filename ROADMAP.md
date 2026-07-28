@@ -6,17 +6,9 @@ means the work is not done.
 
 ## Live parameters §road:live-parameters
 
-Compile a transform's dynamic properties to graph inputs so a consumer
-varies a grade per frame without recompiling (§spec:dynamic-properties) —
-the capability that distinguishes an emitted graph from a baked table.
-
-### Scalar dynamic properties §road:scalar-dynamics
-
-Emit `EXPOSURE`, `CONTRAST`, and `GAMMA`, plus ASC CDL's slope, offset,
-power, and saturation, as named graph inputs with their OCIO defaults
-recorded (§spec:dynamic-properties). A live parameter is verified by
-sweeping it against the oracle (§spec:verification), not only at its
-default.
+The scalar and per-channel properties compile to graph inputs
+(§spec:dynamic-properties), so a consumer varies a grade per frame without
+recompiling. What is left is the shape those inputs cannot take.
 
 ### Curve-shaped grading properties §road:grading-curves
 

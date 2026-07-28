@@ -119,10 +119,55 @@ that produced it in its `metadata_props`.
 
 ## Live parameters
 
-Planned. A transform's dynamic properties — exposure, contrast, gamma,
-ASC CDL — compile to graph *inputs*, so a grade varies per frame without
-recompiling. This is what a baked LUT cannot do, and it is why the emitted
-artifact is a graph rather than a table. See [ROADMAP.md](ROADMAP.md).
+A transform's dynamic properties compile to graph *inputs*, so a grade
+varies per frame without recompiling. This is what a baked LUT cannot do,
+and it is why the emitted artifact is a graph rather than a table.
+
+`ExposureContrast` carries `EXPOSURE`, `CONTRAST`, and `GAMMA`; ASC CDL
+carries `CDL_SLOPE`, `CDL_OFFSET`, `CDL_POWER`, and `CDL_SATURATION`. Each
+is an ONNX input backed by an initializer holding the config's own value,
+so an input left unbound reads that default. `compile` names them:
+
+```text
+live parameters (bind to vary per frame; unbound reads the default):
+  EXPOSURE        0.5
+  CONTRAST        1.2
+  GAMMA           1
+  CDL_SLOPE       1.1, 1, 0.9
+  CDL_OFFSET      0, 0, 0
+  CDL_POWER       1.2, 1, 0.8
+  CDL_SATURATION  1.3
+```
+
+From Python, `parameters(model)` answers the same question off the artifact,
+and any runtime binds them the way it binds the image:
+
+```python
+from ocio2onnx import compile_colorspaces, parameters
+
+model = compile_colorspaces("ref", "graded", config="grade.ocio")
+parameters(model)  # {"EXPOSURE": array([0.5], dtype=float32), ...}
+session.run(None, {"input": image, "EXPOSURE": [1.5]})
+```
+
+A knob needs an op to hang on, and OCIO drops an op set to its own identity
+before the compiler sees it. So a template config whose grade is neutral —
+exposure 0, contrast 1, slope `[1, 1, 1]` — compiles to a graph with no
+inputs at all. A grade already off its identity is unaffected. To keep a
+neutral one, either author it at the value the grade starts from, or declare
+it dynamic, which OCIO's config syntax spells by *omitting* the parameter:
+
+```yaml
+# exposure is dynamic; the op survives and the graph carries all three knobs
+from_scene_reference: !<ExposureContrastTransform> {style: linear, contrast: 1, gamma: 1}
+```
+
+A CDL has no such declaration — OCIO defines no dynamic property for one —
+so a neutral CDL meant to be driven has to be authored off its identity.
+
+The four `GRADING_*` families are not emitted — their parameters are control
+points rather than values — and refuse by name like any other unimplemented
+op. See [ROADMAP.md](ROADMAP.md).
 
 ## Verification
 
@@ -160,8 +205,11 @@ file's terms, not this compiler's. Point it at configs you would run
 Op coverage is complete for the pinned config: every one of its 159
 transforms compiles and verifies against OCIO's CPU processor — the
 closed-form ops, the sampled lookups, and both `FixedFunction` styles,
-including the ACES 2.0 display renderings. Live parameters and packaging
-are what is left in [ROADMAP.md](ROADMAP.md).
+including the ACES 2.0 display renderings. A grade is live: exposure,
+contrast, gamma, and the ASC CDL quartet emit as graph inputs, each swept
+against the oracle rather than checked at its default. The curve-shaped
+`GRADING_*` families and packaging are what is left in
+[ROADMAP.md](ROADMAP.md).
 
 ## License
 

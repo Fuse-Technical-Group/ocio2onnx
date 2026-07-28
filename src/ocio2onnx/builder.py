@@ -2,7 +2,8 @@
 
 The builder holds no color knowledge. Emitters name the arithmetic; this
 module names the tensors, keeps them unique, and settles the graph's
-interface: channels-first float32, batch and spatial dimensions free.
+interface: channels-first float32, batch and spatial dimensions free, plus one
+input per live parameter (§spec:dynamic-properties).
 """
 
 from __future__ import annotations
@@ -44,6 +45,11 @@ PRECISION_KEY = f"{METADATA_PREFIX}precision"
 CHANNEL_SHAPE = (1, CHANNELS, 1, 1)
 SCALAR_SHAPE = (1,)
 
+#: What a per-channel live parameter is declared as. A consumer binding a
+#: grade hands over three numbers; putting the reshape onto the image's channel
+#: axis inside the graph keeps that shape out of its interface.
+PARAMETER_SHAPE = (CHANNELS,)
+
 #: Where the channels sit in ``IMAGE_SHAPE``, for an op that reduces across
 #: them rather than elementwise along them.
 CHANNEL_AXIS = 1
@@ -56,6 +62,8 @@ class GraphBuilder:
         self._nodes: list[onnx.NodeProto] = []
         self._initializers: list[onnx.TensorProto] = []
         self._counts: collections.Counter[str] = collections.Counter()
+        self._parameters: list[onnx.ValueInfoProto] = []
+        self._parameter_names: set[str] = set()
 
     def name(self, hint: str) -> str:
         """A tensor name unique within this graph."""
@@ -82,6 +90,51 @@ class GraphBuilder:
         """A single-element constant that broadcasts against anything."""
         return self.constant(hint, np.reshape(value, SCALAR_SHAPE))
 
+    def scalar_parameter(self, name: str, value: float) -> str:
+        """A live scalar: a graph input defaulting to OCIO's own value.
+
+        ONNX spells "input with a default" as an initializer sharing a graph
+        input's name, which is what makes one compiled artifact serve every
+        setting of the knob (§spec:dynamic-properties).
+        """
+        return self._parameter(name, np.reshape(value, SCALAR_SHAPE))
+
+    def channel_parameter(self, name: str, values: Any) -> str:
+        """A live per-channel parameter, declared flat and reshaped to
+        broadcast across the image's channel axis."""
+        declared = self._parameter(name, np.reshape(values, PARAMETER_SHAPE))
+        return self.op(
+            "Reshape",
+            [declared, self.constant("channel_shape", CHANNEL_SHAPE, dtype=np.int64)],
+        )
+
+    def _parameter(self, name: str, array: np.ndarray) -> str:
+        """Declare one graph input carrying ``array`` as its default.
+
+        The name is the caller's where it is free and suffixed where it is not.
+        Two graded ops in one transform hold different defaults, so a shared
+        input would have to discard one of them; OCIO's own run time allows one
+        dynamic property of each type per processor and drops the rest, which
+        is a limit of that plumbing rather than of a graph.
+
+        The taken names are kept rather than rebuilt per call. A config's op
+        count is the caller's, not this compiler's (§spec:problem-statement),
+        and rebuilding made compiling one quadratic in the number of graded ops
+        it carries: 1000 CDLs cost 1.8 seconds and 3000 cost 19.
+        """
+        unique, index = name, 1
+        while unique in self._parameter_names:
+            index += 1
+            unique = f"{name}_{index}"
+        self._parameter_names.add(unique)
+        self._initializers.append(
+            numpy_helper.from_array(np.asarray(array, dtype=np.float32), unique)
+        )
+        self._parameters.append(
+            helper.make_tensor_value_info(unique, TensorProto.FLOAT, array.shape)
+        )
+        return unique
+
     def op(self, op_type: str, inputs: list[str], **attrs: Any) -> str:
         """Append a single-output node and return the tensor it produces."""
         output = self.name(op_type.lower())
@@ -104,6 +157,9 @@ class GraphBuilder:
 
     def pow(self, a: str, b: str) -> str:
         return self.op("Pow", [a, b])
+
+    def reciprocal(self, x: str) -> str:
+        return self.op("Reciprocal", [x])
 
     def to_int64(self, x: str) -> str:
         """Cast to int64, which is what a ``Gather`` index must be.
@@ -133,7 +189,7 @@ class GraphBuilder:
         graph = helper.make_graph(
             self._nodes,
             name,
-            [_value(INPUT)],
+            [_value(INPUT), *self._parameters],
             [_value(OUTPUT)],
             self._initializers,
         )
@@ -142,6 +198,27 @@ class GraphBuilder:
         helper.set_model_props(model, {**metadata, PRECISION_KEY: PRECISION})
         onnx.checker.check_model(model, full_check=True)
         return model
+
+
+def parameters(model: onnx.ModelProto) -> dict[str, np.ndarray]:
+    """A graph's live parameters and the OCIO defaults they carry.
+
+    The knobs a consumer can vary per frame, in declaration order. Read off the
+    model rather than off a side table: an input backed by an initializer is
+    exactly what the format means by an overridable default, so the artifact
+    answers for itself and a consumer that never loaded this package can ask
+    the same question (§spec:dynamic-properties).
+    """
+    # Keyed off the inputs rather than off the initializers, so a half-domain
+    # `Lut1D`'s 65536 entries are never decoded to report a handful of scalars.
+    initializers = {
+        initializer.name: initializer for initializer in model.graph.initializer
+    }
+    return {
+        value.name: numpy_helper.to_array(initializers[value.name])
+        for value in model.graph.input
+        if value.name in initializers
+    }
 
 
 def _value(name: str) -> onnx.ValueInfoProto:

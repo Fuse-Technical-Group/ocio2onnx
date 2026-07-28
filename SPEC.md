@@ -247,7 +247,7 @@ defining a transform, which §spec:non-goals forbids, and would read as
 error against the oracle.
 
 ## Verification §spec:verification
-*Status: complete*
+*Status: in progress*
 
 OCIO's CPU processor is the oracle. For every transform the compiler
 claims to support, a test generates an input lattice — including values
@@ -291,6 +291,35 @@ misreading; a lattice against the reference does.
 Coverage is asserted, not sampled: for every color space pair in the
 pinned config, the compiler either emits a verified graph or refuses with
 a named op.
+
+### What counts as evidence §spec:evidence-floor
+
+Some transforms overflow float32 somewhere in the lattice: 12 of the pinned
+config's 135 verified transforms do, at up to 36 of 1248 samples. A
+non-finite reference value carries no magnitude to measure a tolerance
+against, so agreement at those samples is asserted on the *kind* of value
+instead — `+inf`, `-inf`, and NaN are three distinct answers, and the graph
+shall return the one the reference returned. Every sample is therefore
+evidence: a sample is compared against the tolerance or matched against a
+class, never dropped.
+
+*Why not drop them*: a direction inverted at overflow, the reference falling
+to `-inf` where the graph climbs to `+inf`, is exactly the misreading this
+section exists to catch. Dropping the sample reads that as agreement.
+
+A verified graph shall also have at least one finite sample compared. A
+transform whose reference is non-finite across the whole lattice otherwise
+compares nothing and reports agreement — a graph certified on no evidence,
+which is worse than one that refuses, because "verified" is a claim the
+consumer acts on. No transform in the pinned config is in that state today;
+a config the compiler is handed is arbitrary (§spec:problem-statement), and
+a NaN coefficient in a config-declared matrix is enough to reach it.
+
+*Why a floor of one sample rather than a fraction of the lattice*: a
+percentage would need a constant this document cannot derive from anything,
+and would refuse a legitimately overflow-heavy transform added later. Once
+every sample is checked one way or the other, the only quantity left worth
+asserting is that the finite kind occurred at all.
 
 ## Dynamic properties §spec:dynamic-properties
 *Status: not started*

@@ -19,8 +19,14 @@ from ocio2onnx.emitters import supported_ops
 
 #: Measured across the pinned config (§spec:op-coverage). ``FixedFunction``
 #: appears as its two styles, which is what ``op_label`` names.
+#:
+#: These are the ops OCIO's renderer runs, not the ops the config declares:
+#: every processor is optimized before it leaves ``addressing``, so the
+#: compiler and the oracle read one list (§spec:verification). The declared
+#: list holds 284 matrices — a display view's adjacent pair composes, and OCIO
+#: folds it.
 OP_CENSUS = {
-    "Matrix": 284,
+    "Matrix": 186,
     "Range": 52,
     "Lut1D": 40,
     "Exponent": 26,
@@ -32,10 +38,15 @@ OP_CENSUS = {
 }
 TOTAL_TRANSFORMS = 159
 
-#: The census refuses by op, so a transform whose ``Lut1D`` an emitter refuses
-#: for a parameter — a hue adjust, say — is not counted here. That refusal is
-#: ``ocio2onnx verify``'s, which compiles (§spec:op-coverage).
-REFUSED_TRANSFORMS = 24
+#: Every op the pinned config carries has an emitter, so the census refuses
+#: nothing (§spec:op-coverage). Pinned at zero rather than dropped: an OCIO
+#: release adding an op type raises it, which is the change this report exists
+#: to surface.
+REFUSED_TRANSFORMS = 0
+
+#: OCIO's own GPU path bakes a sampled texture for more transforms than this
+#: compiler needs a table for: 40 carry a ``Lut1D``, and the other eight are
+#: closed-form ops OCIO's shader sampled anyway.
 NEEDS_LUT = 48
 
 #: The script SPEC.md §spec:op-coverage names by path.
@@ -62,7 +73,12 @@ def test_the_lut_partition_is_ocios_own(taken):
 def test_the_census_refuses_exactly_what_the_compiler_refuses(taken, config):
     """One supported set, not two. ``SUPPORTED`` used to live here and had
     already drifted: it listed ``Lut1D`` while no emitter implemented one, so
-    the census reported 28 refusals where the compiler made 48."""
+    the census reported 28 refusals where the compiler made 48.
+
+    Both sides are empty over this config, so what the comparison holds is the
+    route rather than a count: the census asks ``compiler.unsupported_ops``
+    per transform, and an emitter lost shows up in both at once.
+    """
     expected = [
         (label, unsupported_ops(processor))
         for label, processor in enumerate_transforms(config)
@@ -73,22 +89,25 @@ def test_the_census_refuses_exactly_what_the_compiler_refuses(taken, config):
 
 def test_the_census_marks_the_ops_the_compiler_emits(taken):
     """Every name the census counts is marked against the set the compiler
-    selects an emitter from, so no counted name is left unmarkable."""
+    selects an emitter from, so no counted name is left unmarkable. Every one
+    is marked emitted, which is the same statement as the refusal count."""
     assert taken.supported == supported_ops()
     assert "Lut1D" in taken.supported
     assert "FixedFunction[REC2100_SURROUND]" in taken.supported
-    assert "FixedFunction[ACES_OUTPUT_TRANSFORM_20]" not in taken.supported
-    assert set(taken.ops) - taken.supported == {
-        "FixedFunction[ACES_OUTPUT_TRANSFORM_20]"
-    }
+    assert "FixedFunction[ACES_OUTPUT_TRANSFORM_20]" in taken.supported
+    assert set(taken.ops) - taken.supported == set()
 
 
 def test_refusals_group_by_op(taken):
-    """One op is left, and it is the deferred one (§road:aces-output-transform).
-    A transform carrying two unimplemented ops would count under both."""
-    grouped = dict(census.group_by_op(taken.refusals))
-    assert grouped == {"FixedFunction[ACES_OUTPUT_TRANSFORM_20]": 24}
-    assert sum(grouped.values()) == REFUSED_TRANSFORMS
+    """Nothing is left to group. The rule the grouping applies — a transform
+    carrying two unimplemented ops counts under both, so these sum above the
+    number of refused transforms — is held on a built pair instead, because
+    the config can no longer show it."""
+    assert census.group_by_op(taken.refusals) == []
+    assert census.group_by_op([("both", ["A", "B"]), ("one", ["A"])]) == [
+        ("A", 2),
+        ("B", 1),
+    ]
 
 
 def test_the_report_prints_the_partition(capsys):

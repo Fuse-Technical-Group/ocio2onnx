@@ -12,7 +12,6 @@ import pytest
 import ocio2onnx
 from ocio2onnx import (
     AddressError,
-    UnsupportedOpError,
     compile_colorspaces,
     compile_display_view,
 )
@@ -32,9 +31,12 @@ from ocio2onnx.oracle import verify as oracle_verify
 #: encoding back to the reference.
 PAIR = ("Log3G10 REDWideGamutRGB", "ACES2065-1")
 
-#: A closed-form display view. The tone-mapped views on the same display carry
-#: a FixedFunction and are refused.
+#: A closed-form display view.
 DISPLAY_VIEW = ("sRGB - Display", "Un-tone-mapped")
+
+#: A tone-mapped view on the same display, which reaches it through the ACES
+#: 2.0 output transform — the heaviest op either entry point emits.
+TONE_MAPPED_VIEW = ("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
 
 
 def metadata(model):
@@ -115,9 +117,18 @@ def test_an_unresolvable_view_is_refused_against_the_loaded_config():
         compile_display_view("sRGB - Display", "Not A View")
 
 
-def test_an_unimplemented_op_is_refused_rather_than_approximated():
-    with pytest.raises(UnsupportedOpError, match="FixedFunction"):
-        compile_display_view("sRGB - Display", "ACES 2.0 - SDR 100 nits (Rec.709)")
+def test_a_tone_mapped_display_view_returns_a_model_that_verifies(config, check):
+    """The request this entry point used to refuse. It is what a consumer
+    running a scene-referred working space actually asks for, so the public
+    surface is held against the oracle on it rather than on the closed-form
+    view alone."""
+    model = compile_display_view(*TONE_MAPPED_VIEW)
+    processor = resolve_display_view(
+        config, *TONE_MAPPED_VIEW, uri=DEFAULT_CONFIG
+    ).processor
+    result = check(processor, model=model)
+    assert result.ok, str(result)
+    assert result.compared > 0
 
 
 def test_a_view_with_no_ops_compiles_to_a_pass_through(config, check):

@@ -114,7 +114,7 @@ def test_an_inverse_output_transform_is_refused_by_name(config, compile_bare):
     """The inverse is not this path run backwards — its gamut compression
     solves an approximation twice — so it is refused rather than approximated
     (§spec:op-coverage)."""
-    with pytest.raises(emitters.UnsupportedOpError, match="inverse.*ACES_OUTPUT"):
+    with pytest.raises(emitters.UnsupportedOpError, match=r"inverse.*ACES_OUTPUT"):
         compile_bare(config.getProcessor(aces(inverse=True)))
 
 
@@ -167,9 +167,8 @@ def test_the_declared_breakpoints_are_black_and_the_peak():
 def test_a_neutral_pixel_at_the_peak_reaches_the_top_of_the_tone_scale(resolved):
     """What makes ``peak / 100`` a breakpoint: 1.0 is 100 nits, so a neutral
     pixel there carries exactly the luminance the tone scale tops out at."""
-    assert float(aces2.luminance_to_lightness(resolved.peak_luminance)) == pytest.approx(
-        float(resolved.limit_lightness)
-    )
+    reached = aces2.luminance_to_lightness(resolved.peak_luminance)
+    assert float(reached) == pytest.approx(float(resolved.limit_lightness))
 
 
 def test_the_derived_parameters_are_the_ones_ocio_derives(resolved):

@@ -22,6 +22,7 @@ from typing import Any
 
 import numpy as np
 
+from ocio2onnx import aces2
 from ocio2onnx.builder import CHANNEL_AXIS, CHANNELS, GraphBuilder
 
 #: A ``Range`` bound OCIO leaves unset arrives as NaN, and ``Clip`` needs a
@@ -1090,4 +1091,864 @@ def emit_rec2100_surround(builder: GraphBuilder, transform: Any, x: str) -> str:
     )
     return builder.mul(
         x, builder.pow(floored, builder.scalar("rec2100_exponent", exponent))
+    )
+
+
+def _std_max(builder: GraphBuilder, a: str, b: str) -> str:
+    """``std::max(a, b)``, which is ``a < b ? b : a`` and not ONNX ``Max``.
+
+    The two differ at NaN, and the difference is load bearing here: OCIO's tone
+    scale reaches ``std::max(0.f, NaN)`` for every input whose achromatic
+    response is negative, and answers 0. ONNX ``Max`` propagates the NaN
+    instead, which would put a NaN through the rest of the graph where the
+    reference returns black. Argument order is therefore OCIO's, not tidied.
+    """
+    return builder.where(builder.op("Less", [a, b]), b, a)
+
+
+def _std_min(builder: GraphBuilder, a: str, b: str) -> str:
+    """``std::min(a, b)``, which is ``b < a ? b : a``. See ``_std_max``."""
+    return builder.where(builder.op("Less", [b, a]), b, a)
+
+
+def _lerp(builder: GraphBuilder, a: str, b: str, t: str) -> str:
+    """OCIO's ``lerpf``: ``(b - a) * z + a``, in that association."""
+    return builder.add(builder.mul(builder.sub(b, a), t), a)
+
+
+def _atan2(builder: GraphBuilder, y: str, x: str) -> str:
+    """``atan2(y, x)``, which standard ONNX has no operator for.
+
+    ``atan(y/x)`` carries the whole answer except its quadrant: a ratio cannot
+    tell a positive ``x`` from a negative one, so the half turn is added back.
+    The degenerate arguments need no case of their own — ``y/x`` overflows to
+    an infinity where ``x`` is zero, and that infinity's arctangent is already
+    the right half turn — except ``0/0``, which is NaN and is selected away.
+    """
+    zero = builder.scalar("zero", 0.0)
+    angle = builder.op("Atan", [builder.div(y, x)])
+    half_turn = builder.where(
+        builder.op("Less", [y, zero]),
+        builder.scalar("minus_pi", -math.pi),
+        builder.scalar("pi", math.pi),
+    )
+    quadrant = builder.where(builder.op("Less", [x, zero]), half_turn, zero)
+    origin = builder.op(
+        "And", [builder.op("Equal", [x, zero]), builder.op("Equal", [y, zero])]
+    )
+    return builder.where(origin, zero, builder.add(angle, quadrant))
+
+
+def _cone_compress(builder: GraphBuilder, x: str) -> str:
+    """The post-adaptation cone response compression, sign restored.
+
+    ``|x| ** 0.42 / (27.13 + |x| ** 0.42)``, times the sign of ``x``. The
+    magnitude is taken first because ONNX ``Pow`` on a negative base with a
+    fractional exponent is NaN — the same reason OCIO wraps an unsigned helper
+    in a ``copysign`` rather than raising the signed value directly.
+    """
+    magnitude = builder.pow(
+        builder.op("Abs", [x]), builder.scalar("cone_exponent", aces2.CONE_EXPONENT)
+    )
+    return builder.mul(
+        builder.op("Sign", [x]),
+        builder.div(
+            magnitude,
+            builder.add(builder.scalar("cone_offset", aces2.CONE_OFFSET), magnitude),
+        ),
+    )
+
+
+def _cone_expand(builder: GraphBuilder, x: str) -> str:
+    """The inverse of ``_cone_compress``, sign restored.
+
+    The magnitude is held below 0.99 because the compression's range is [0, 1)
+    and its inverse diverges at the top. OCIO clamps there rather than
+    returning an infinity, and this is a display rendering: the top of its
+    range is white, not overflow.
+    """
+    limited = builder.op(
+        "Min", [builder.op("Abs", [x]), builder.scalar("cone_limit", aces2.CONE_LIMIT)]
+    )
+    return builder.mul(
+        builder.op("Sign", [x]),
+        builder.pow(
+            builder.div(
+                builder.mul(builder.scalar("cone_offset", aces2.CONE_OFFSET), limited),
+                builder.sub(builder.scalar("one", 1.0), limited),
+            ),
+            builder.scalar("inv_cone_exponent", aces2.INV_CONE_EXPONENT),
+        ),
+    )
+
+
+def _matrix3(builder: GraphBuilder, hint: str, matrix: np.ndarray, x: str) -> str:
+    """A 3x3 as a 1x1 convolution, as ``emit_matrix`` emits one."""
+    weight = builder.constant(
+        hint, np.asarray(matrix).reshape(CHANNELS, CHANNELS, 1, 1)
+    )
+    return builder.op("Conv", [x, weight], kernel_shape=[1, 1])
+
+
+def _channel(builder: GraphBuilder, x: str, index: int) -> str:
+    """One channel of a ``(N, 3, H, W)`` tensor, still rank four.
+
+    ``Gather`` with a one-element index keeps the axis, so the result
+    broadcasts against the other two channels with no reshaping.
+    """
+    return builder.op(
+        "Gather",
+        [x, builder.constant(f"channel_{index}", [index], dtype=np.int64)],
+        axis=CHANNEL_AXIS,
+    )
+
+
+def _sample(builder: GraphBuilder, table: str, index: str) -> str:
+    """One hue-indexed table entry per pixel."""
+    return builder.op("Gather", [table, builder.to_int64(index)], axis=0)
+
+
+def _toe(builder: GraphBuilder, x: str, limit: str, k1_in: str, k2_in: str) -> str:
+    """OCIO's ``toe_fwd``: a hyperbola below ``limit``, the identity above it.
+
+    ``Where`` selects rather than branches, so the discarded arm is evaluated
+    anyway; its square root can take a negative argument and answer NaN, which
+    the selection then throws away exactly as OCIO's early return does.
+    """
+    k2 = _std_max(builder, k2_in, builder.scalar("toe_min_k2", aces2.TOE_MIN_K2))
+    k1 = builder.op(
+        "Sqrt", [builder.add(builder.mul(k1_in, k1_in), builder.mul(k2, k2))]
+    )
+    k3 = builder.div(builder.add(limit, k1), builder.add(limit, k2))
+    minus_b = builder.sub(builder.mul(k3, x), k1)
+    minus_ac = builder.mul(builder.mul(k2, k3), x)
+    root = builder.op(
+        "Sqrt",
+        [
+            builder.add(
+                builder.mul(minus_b, minus_b),
+                builder.mul(builder.scalar("four", 4.0), minus_ac),
+            )
+        ],
+    )
+    return builder.where(
+        builder.op("Greater", [x, limit]),
+        x,
+        builder.mul(builder.scalar("half", 0.5), builder.add(minus_b, root)),
+    )
+
+
+def _solve_axis_intersect(
+    builder: GraphBuilder,
+    lightness: str,
+    colourfulness: str,
+    focus: str,
+    maximum: str,
+    slope_gain: str,
+) -> str:
+    """Where one pixel's compression vector meets the achromatic axis.
+
+    A quadratic, parameterised one way for the hull below the focus lightness
+    and another above it, each written in the form whose denominator does not
+    cancel.
+    """
+    scaled = builder.div(colourfulness, slope_gain)
+    a = builder.div(scaled, focus)
+    one = builder.scalar("one", 1.0)
+    four = builder.scalar("four", 4.0)
+    minus_two = builder.scalar("minus_two", -2.0)
+
+    def solve(b: str, c: str, combine) -> str:
+        root = builder.op(
+            "Sqrt",
+            [builder.sub(builder.mul(b, b), builder.mul(builder.mul(four, a), c))],
+        )
+        return builder.div(builder.mul(minus_two, c), combine(b, root))
+
+    below = solve(builder.sub(one, scaled), builder.op("Neg", [lightness]), builder.add)
+    above = solve(
+        builder.op(
+            "Neg", [builder.add(builder.add(one, scaled), builder.mul(maximum, a))]
+        ),
+        builder.add(builder.mul(maximum, scaled), lightness),
+        builder.sub,
+    )
+    return builder.where(builder.op("Less", [lightness, focus]), below, above)
+
+
+def _boundary_intersect(
+    builder: GraphBuilder,
+    axis: str,
+    slope: str,
+    inv_gamma: str,
+    lightness_max: str,
+    colourfulness_max: str,
+    reference: str,
+) -> str:
+    """Where a compression vector meets a hull, estimated rather than solved.
+
+    The hull is an exponential and the vector a straight line, so their exact
+    intersection needs an iteration. OCIO instead shifts the line's intercept
+    through the hull's own inverse and intersects two straight lines, which is
+    closed form. This compiler reproduces the estimate rather than improving on
+    it: what the estimate produces is the reference (§spec:verification).
+    """
+    shifted = builder.mul(
+        reference, builder.pow(builder.div(axis, reference), inv_gamma)
+    )
+    return builder.div(
+        builder.mul(shifted, colourfulness_max),
+        builder.sub(lightness_max, builder.mul(slope, colourfulness_max)),
+    )
+
+
+def _hue_interval(
+    builder: GraphBuilder, hue: str, position: str, params: aces2.OutputTransform
+) -> str:
+    """The upper index of the hue table interval holding ``hue``.
+
+    OCIO's ``lookup_hue_interval``, unrolled. The table is near enough to
+    uniform that the search starts at the entry a uniform table would have used
+    and brackets it with a window measured off the table itself, so a couple of
+    steps close it rather than the nine a bisection over 360 entries would
+    take (`aces2._search_range`).
+
+    Unrolled rather than folded into a count of the entries below ``hue``,
+    which is what it amounts to in the middle of the table: at either end the
+    bracket clamps, and a clamped loop returns having tested nothing.
+    """
+    low, high = params.search_range
+    table = builder.constant("aces2_hues", params.hues)
+    zero = builder.scalar("zero", 0.0)
+    one = builder.scalar("one", 1.0)
+    half = builder.scalar("half", 0.5)
+
+    lower = builder.op(
+        "Max", [zero, builder.add(position, builder.scalar("hue_window_low", low))]
+    )
+    upper = builder.op(
+        "Min",
+        [
+            builder.scalar("hue_upper_wrap", float(aces2.UPPER_WRAP)),
+            builder.add(position, builder.scalar("hue_window_high", high)),
+        ],
+    )
+    index = position
+
+    for _ in range(max(1, math.ceil(math.log2(high - low)) + 1)):
+        running = builder.op("Less", [builder.add(lower, one), upper])
+        above = builder.op("Greater", [hue, _sample(builder, table, index)])
+        lower = builder.where(builder.op("And", [running, above]), index, lower)
+        upper = builder.where(
+            builder.op("And", [running, builder.op("Not", [above])]), index, upper
+        )
+        index = builder.where(
+            running,
+            builder.op("Floor", [builder.mul(builder.add(lower, upper), half)]),
+            index,
+        )
+
+    return builder.op("Max", [one, upper])
+
+
+def aces_output_transform_breakpoints(transform: Any) -> list[float]:
+    """Black and the peak, stated on the diagonal.
+
+    The op branches in lightness rather than in the channels — at a
+    non-positive achromatic response, and above the lightness the tone scale
+    tops out at — so in general neither branch is an input value at all. On a
+    neutral pixel both are: the achromatic response crosses zero at black, and
+    the tone scale tops out at the peak luminance the op was parameterised
+    with, which a neutral pixel reaches at ``peak / 100`` because 1.0 is 100
+    nits.
+    """
+    return [0.0, float(transform.getParams()[0]) / float(aces2.REFERENCE_LUMINANCE)]
+
+
+@register(
+    "FixedFunction[ACES_OUTPUT_TRANSFORM_20]",
+    breakpoints=aces_output_transform_breakpoints,
+)
+def emit_aces_output_transform(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """The ACES 2.0 display rendering: tone scale, chroma and gamut compression.
+
+    The largest op in the pinned config, and the only one that is *the look* —
+    an error here is the most visible failure available (§spec:op-coverage). It
+    is also the second op whose arithmetic crosses channels, and it crosses
+    them further than ``REC2100_SURROUND`` does: the whole transform runs
+    inside a colour appearance model, so every intermediate is one scalar per
+    pixel rather than one per channel. The graph therefore takes the three
+    channels apart after the second matrix and puts them back together before
+    the third.
+
+    The shape is OCIO's renderer, read off ``ACES2/Transform.cpp`` rather than
+    off the published ACES 2.0 description, which differs from it exactly where
+    it is expensive to notice: which clamp is applied in which domain, where
+    the absolute values sit, and which ``std::max`` swallows a NaN
+    (`_std_max`).
+
+    Only the forward direction emits. The inverse exists in OCIO and in no
+    transform of the pinned config, and it is not this path run backwards — its
+    gamut compression solves an approximation twice, the first pass only to
+    estimate the lightness the second needs. Emitting the forward path for an
+    inverse request would be approximating a display rendering, which
+    §spec:op-coverage refuses rather than ships.
+    """
+    if _is_inverse(transform):
+        raise UnsupportedOpError(
+            "an inverse FixedFunction[ACES_OUTPUT_TRANSFORM_20] is not emitted "
+            "by this compiler; it emits the forward display rendering"
+        )
+    params = aces2.output_transform(transform)
+
+    zero = builder.scalar("zero", 0.0)
+    one = builder.scalar("one", 1.0)
+
+    # RGB into the appearance model's achromatic and two chromatic responses.
+    responses = _matrix3(
+        builder,
+        "aces2_cone_to_aab",
+        params.inward.cone_to_aab,
+        _cone_compress(
+            builder,
+            _matrix3(builder, "aces2_rgb_to_cone", params.inward.rgb_to_cone, x),
+        ),
+    )
+    achromatic = _channel(builder, responses, 0)
+    red_green = _channel(builder, responses, 1)
+    yellow_blue = _channel(builder, responses, 2)
+
+    # ... and on into lightness, colourfulness, and hue. A non-positive
+    # achromatic response has no hue to report, and OCIO answers black.
+    coloured = builder.op("Greater", [achromatic, zero])
+    degrees = builder.div(
+        builder.mul(
+            builder.scalar("half_turn_degrees", 180.0),
+            _atan2(builder, yellow_blue, red_green),
+        ),
+        builder.scalar("pi", math.pi),
+    )
+    hue = builder.where(
+        coloured,
+        builder.where(
+            builder.op("Less", [degrees, zero]),
+            builder.add(degrees, builder.scalar("full_turn_degrees", 360.0)),
+            degrees,
+        ),
+        zero,
+    )
+    lightness = builder.where(
+        coloured,
+        builder.mul(
+            builder.scalar("aces2_lightness_scale", aces2.J_SCALE),
+            builder.pow(
+                builder.op("Clip", [achromatic, zero]),
+                builder.scalar("aces2_cz", aces2.CZ),
+            ),
+        ),
+        zero,
+    )
+    colourfulness = builder.where(
+        coloured,
+        builder.op(
+            "Sqrt",
+            [
+                builder.add(
+                    builder.mul(red_green, red_green),
+                    builder.mul(yellow_blue, yellow_blue),
+                )
+            ],
+        ),
+        zero,
+    )
+
+    radians = builder.div(
+        builder.mul(builder.scalar("pi", math.pi), hue),
+        builder.scalar("half_turn_degrees", 180.0),
+    )
+    cosine = builder.op("Cos", [radians])
+    sine = builder.op("Sin", [radians])
+
+    # The reach table is uniform at one entry per degree, so its interval is
+    # the hue's own integer part and costs no search.
+    position = builder.op("Floor", [hue])
+    reach = builder.constant("aces2_reach", params.reach)
+    reach_index = builder.add(position, one)
+    reach_max = _lerp(
+        builder,
+        _sample(builder, reach, reach_index),
+        _sample(builder, reach, builder.add(reach_index, one)),
+        builder.sub(hue, position),
+    )
+
+    toned = _tone_scale(builder, achromatic, params)
+    compressed = _chroma_compress(
+        builder,
+        lightness,
+        colourfulness,
+        toned,
+        _chroma_norm(builder, cosine, sine, params),
+        reach_max,
+        params,
+    )
+    lightness_out, colourfulness_out = _gamut_compress(
+        builder, toned, compressed, hue, position, reach_max, params
+    )
+
+    # Back out through the limiting gamut's half of the model. The hue is
+    # unchanged by everything above, so the cosine and sine taken on the way in
+    # are the ones that rebuild the chromatic responses on the way out.
+    return _matrix3(
+        builder,
+        "aces2_cone_to_rgb",
+        params.outward.cone_to_rgb,
+        _cone_expand(
+            builder,
+            _matrix3(
+                builder,
+                "aces2_aab_to_cone",
+                params.outward.aab_to_cone,
+                builder.op(
+                    "Concat",
+                    [
+                        builder.pow(
+                            builder.mul(
+                                lightness_out,
+                                builder.scalar(
+                                    "aces2_inv_lightness_scale",
+                                    1.0 / float(aces2.J_SCALE),
+                                ),
+                            ),
+                            builder.scalar("aces2_inv_cz", aces2.INV_CZ),
+                        ),
+                        builder.mul(colourfulness_out, cosine),
+                        builder.mul(colourfulness_out, sine),
+                    ],
+                    axis=CHANNEL_AXIS,
+                ),
+            ),
+        ),
+    )
+
+
+def _chroma_norm(
+    builder: GraphBuilder, cosine: str, sine: str, params: aces2.OutputTransform
+) -> str:
+    """What the chroma compression measures colourfulness against.
+
+    Three harmonics of hue and a constant, weighted. It is what stops the
+    compression reading a yellow and a blue of equal colourfulness as equally
+    far out: the appearance model's colourfulness is not uniform around the hue
+    circle, and this is the correction OCIO applies for it.
+    """
+    two = builder.scalar("two", 2.0)
+    three = builder.scalar("three", 3.0)
+    four = builder.scalar("four", 4.0)
+    cos2 = builder.sub(
+        builder.mul(two, builder.mul(cosine, cosine)), builder.scalar("one", 1.0)
+    )
+    sin2 = builder.mul(two, builder.mul(cosine, sine))
+    cos3 = builder.sub(
+        builder.mul(four, builder.mul(cosine, builder.mul(cosine, cosine))),
+        builder.mul(three, cosine),
+    )
+    sin3 = builder.sub(
+        builder.mul(three, sine),
+        builder.mul(four, builder.mul(sine, builder.mul(sine, sine))),
+    )
+
+    total = builder.scalar("aces2_norm_offset", aces2.CHROMA_NORM_OFFSET)
+    for weight, harmonic in zip(
+        aces2.CHROMA_NORM_COS + aces2.CHROMA_NORM_SIN,
+        (cosine, cos2, cos3, sine, sin2, sin3),
+        strict=True,
+    ):
+        total = builder.add(
+            total, builder.mul(builder.scalar("aces2_norm_weight", weight), harmonic)
+        )
+    return builder.mul(total, builder.scalar("aces2_chroma_scale", params.chroma_scale))
+
+
+def _tone_scale(
+    builder: GraphBuilder, achromatic: str, params: aces2.OutputTransform
+) -> str:
+    """The display rendering's tone curve, run on the achromatic response.
+
+    Out of the response into luminance, through the curve, and back into
+    lightness. OCIO runs it from the response rather than from lightness
+    because the round trip then costs two powers instead of four, and it
+    carries the sign around the whole thing rather than through it.
+
+    A negative response has no luminance: the inverse compression raises a
+    negative number to a fractional power and every step after it is NaN. The
+    curve's own ``std::max(0, ...)`` is what turns that back into black, which
+    is why that comparison is emitted rather than an ONNX ``Max`` (`_std_max`).
+    """
+    tone = params.tone
+    limited = _std_min(
+        builder,
+        builder.mul(builder.scalar("aces2_white_response", aces2.A_W_J), achromatic),
+        builder.scalar("cone_limit", aces2.CONE_LIMIT),
+    )
+    luminance = builder.div(
+        builder.pow(
+            builder.div(
+                builder.mul(builder.scalar("cone_offset", aces2.CONE_OFFSET), limited),
+                builder.sub(builder.scalar("one", 1.0), limited),
+            ),
+            builder.scalar("inv_cone_exponent", aces2.INV_CONE_EXPONENT),
+        ),
+        builder.scalar("aces2_adaptation", aces2.F_L_N),
+    )
+
+    curve = builder.mul(
+        builder.scalar("aces2_tone_scale", tone.m_2),
+        builder.pow(
+            builder.div(
+                luminance,
+                builder.add(luminance, builder.scalar("aces2_tone_shift", tone.s_2)),
+            ),
+            builder.scalar("aces2_tone_contrast", tone.g),
+        ),
+    )
+    displayed = builder.mul(
+        _std_max(
+            builder,
+            builder.scalar("zero", 0.0),
+            builder.div(
+                builder.mul(curve, curve),
+                builder.add(curve, builder.scalar("aces2_tone_toe", tone.t_1)),
+            ),
+        ),
+        builder.scalar("aces2_tone_white", tone.n_r),
+    )
+
+    response = builder.pow(
+        builder.mul(displayed, builder.scalar("aces2_adaptation", aces2.F_L_N)),
+        builder.scalar("cone_exponent", aces2.CONE_EXPONENT),
+    )
+    return builder.mul(
+        builder.op("Sign", [achromatic]),
+        builder.mul(
+            builder.scalar("aces2_lightness_scale", aces2.J_SCALE),
+            builder.pow(
+                builder.mul(
+                    builder.div(
+                        response,
+                        builder.add(
+                            builder.scalar("cone_offset", aces2.CONE_OFFSET), response
+                        ),
+                    ),
+                    builder.scalar("aces2_inv_white_response", aces2.INV_A_W_J),
+                ),
+                builder.scalar("aces2_cz", aces2.CZ),
+            ),
+        ),
+    )
+
+
+def _chroma_compress(
+    builder: GraphBuilder,
+    lightness: str,
+    colourfulness: str,
+    toned: str,
+    norm: str,
+    reach_max: str,
+    params: aces2.OutputTransform,
+) -> str:
+    """How far colourfulness travels with the tone scale.
+
+    The tone scale moves lightness and would leave colourfulness behind, which
+    reads as a saturation shift. This scales it by the same move and then bends
+    it twice: outward near black, where the eye expects more saturation than
+    the linear scale gives, and inward towards the reach gamut, which is the
+    ceiling the compression is allowed to use.
+
+    Colourfulness of exactly zero stays there. Not an optimisation — the
+    scaling divides by the lightness the pixel arrived with, which is zero for
+    those same pixels.
+    """
+    zero = builder.scalar("zero", 0.0)
+    one = builder.scalar("one", 1.0)
+    inv_cz = builder.scalar("aces2_inv_cz", aces2.INV_CZ)
+
+    normalised = builder.div(
+        toned, builder.scalar("aces2_limit_lightness", params.limit_lightness)
+    )
+    remaining = _std_max(builder, zero, builder.sub(one, normalised))
+    ceiling = builder.div(builder.mul(builder.pow(normalised, inv_cz), reach_max), norm)
+
+    scaled = builder.div(
+        builder.mul(colourfulness, builder.pow(builder.div(toned, lightness), inv_cz)),
+        norm,
+    )
+    expanded = builder.sub(
+        ceiling,
+        _toe(
+            builder,
+            builder.sub(ceiling, scaled),
+            builder.sub(ceiling, builder.scalar("toe_min_k2", aces2.TOE_MIN_K2)),
+            builder.mul(
+                remaining, builder.scalar("aces2_saturation", params.saturation)
+            ),
+            builder.op(
+                "Sqrt",
+                [
+                    builder.add(
+                        builder.mul(normalised, normalised),
+                        builder.scalar(
+                            "aces2_saturation_threshold", params.saturation_threshold
+                        ),
+                    )
+                ],
+            ),
+        ),
+    )
+    compressed = builder.mul(
+        _toe(
+            builder,
+            expanded,
+            ceiling,
+            builder.mul(normalised, builder.scalar("aces2_compress", params.compress)),
+            remaining,
+        ),
+        norm,
+    )
+    return builder.where(
+        builder.op("Equal", [colourfulness, zero]), colourfulness, compressed
+    )
+
+
+def _gamut_compress(
+    builder: GraphBuilder,
+    lightness: str,
+    colourfulness: str,
+    hue: str,
+    position: str,
+    reach_max: str,
+    params: aces2.OutputTransform,
+) -> tuple[str, str]:
+    """Bring what is left inside the display gamut, along a hue-constant line.
+
+    Every pixel is pushed towards a focus point on the achromatic axis, so its
+    hue survives exactly and its lightness moves only as far as the vector
+    requires. What it is pushed against is the display gamut's hull, whose
+    shape at this hue comes out of the cusp table: the lightness and
+    colourfulness of the most saturated colour the display can show, and the
+    exponent of the hull above it.
+
+    Three shapes leave uncompressed, each answering a question OCIO's renderer
+    asks before the one below it: black, anything already achromatic or above
+    the tone scale's ceiling, and the case where the hull estimate collapses.
+    """
+    zero = builder.scalar("zero", 0.0)
+    one = builder.scalar("one", 1.0)
+    limit = builder.scalar("aces2_limit_lightness", params.limit_lightness)
+
+    upper = _hue_interval(builder, hue, builder.add(position, one), params)
+    hues = builder.constant("aces2_hues", params.hues)
+    hue_low = _sample(builder, hues, builder.sub(upper, one))
+    weight = builder.div(
+        builder.sub(hue, hue_low), builder.sub(_sample(builder, hues, upper), hue_low)
+    )
+    cusp_lightness, cusp_colourfulness, upper_hull_gamma_inv = (
+        _lerp(
+            builder,
+            _sample(builder, column, builder.sub(upper, one)),
+            _sample(builder, column, upper),
+            weight,
+        )
+        for column in (
+            builder.constant("aces2_cusp_lightness", params.cusps[:, 0]),
+            builder.constant("aces2_cusp_colourfulness", params.cusps[:, 1]),
+            builder.constant("aces2_cusp_gamma", params.cusps[:, 2]),
+        )
+    )
+
+    focus = _lerp(
+        builder,
+        cusp_lightness,
+        builder.scalar("aces2_mid_lightness", params.mid_lightness),
+        _std_min(
+            builder,
+            one,
+            builder.sub(
+                builder.scalar("aces2_cusp_mid_blend", aces2.CUSP_MID_BLEND),
+                builder.div(cusp_lightness, limit),
+            ),
+        ),
+    )
+    threshold = _lerp(
+        builder,
+        cusp_lightness,
+        limit,
+        builder.scalar("aces2_focus_gain_blend", aces2.FOCUS_GAIN_BLEND),
+    )
+
+    # Above that threshold the focus point recedes, because the vectors would
+    # otherwise converge hard enough to fold the hull onto itself.
+    gain = builder.mul(
+        limit, builder.scalar("aces2_focus_distance", params.focus_distance)
+    )
+    recession = builder.mul(
+        builder.op(
+            "Log",
+            [
+                builder.div(
+                    builder.sub(limit, threshold),
+                    _std_max(
+                        builder,
+                        builder.scalar(
+                            "aces2_focus_gain_floor", aces2.FOCUS_GAIN_FLOOR
+                        ),
+                        builder.sub(limit, lightness),
+                    ),
+                )
+            ],
+        ),
+        builder.scalar("inv_ln10", 1.0 / math.log(10.0)),
+    )
+    slope_gain = builder.where(
+        builder.op("Greater", [lightness, threshold]),
+        builder.mul(gain, builder.add(builder.mul(recession, recession), one)),
+        gain,
+    )
+
+    axis = _solve_axis_intersect(
+        builder, lightness, colourfulness, focus, limit, slope_gain
+    )
+    direction = builder.where(
+        builder.op("Less", [axis, focus]), axis, builder.sub(limit, axis)
+    )
+    slope = builder.div(
+        builder.mul(direction, builder.sub(axis, focus)),
+        builder.mul(focus, slope_gain),
+    )
+    cusp_axis = _solve_axis_intersect(
+        builder, cusp_lightness, cusp_colourfulness, focus, limit, slope_gain
+    )
+
+    boundary = _smooth_min(
+        builder,
+        _boundary_intersect(
+            builder,
+            axis,
+            slope,
+            builder.scalar("aces2_lower_hull_gamma", params.lower_hull_gamma_inv),
+            cusp_lightness,
+            cusp_colourfulness,
+            cusp_axis,
+        ),
+        _boundary_intersect(
+            builder,
+            builder.sub(limit, axis),
+            builder.op("Neg", [slope]),
+            upper_hull_gamma_inv,
+            builder.sub(limit, cusp_lightness),
+            cusp_colourfulness,
+            builder.sub(limit, cusp_axis),
+        ),
+        cusp_colourfulness,
+    )
+    remapped = _remap(
+        builder,
+        colourfulness,
+        boundary,
+        _boundary_intersect(
+            builder,
+            axis,
+            slope,
+            builder.scalar("aces2_inv_cz", aces2.INV_CZ),
+            limit,
+            reach_max,
+            limit,
+        ),
+    )
+    lightness_out = builder.add(axis, builder.mul(remapped, slope))
+
+    # The three uncompressed shapes, innermost first. Each condition is one
+    # OCIO tests before the one after it, so a NaN reaching any of them falls
+    # through to the arm it falls through to there.
+    for condition, kept in (
+        (builder.op("LessOrEqual", [boundary, zero]), lightness),
+        (
+            builder.op(
+                "Or",
+                [
+                    builder.op("LessOrEqual", [colourfulness, zero]),
+                    builder.op("Greater", [lightness, limit]),
+                ],
+            ),
+            lightness,
+        ),
+        (builder.op("LessOrEqual", [lightness, zero]), zero),
+    ):
+        lightness_out = builder.where(condition, kept, lightness_out)
+        remapped = builder.where(condition, zero, remapped)
+
+    return lightness_out, remapped
+
+
+def _smooth_min(builder: GraphBuilder, a: str, b: str, reference: str) -> str:
+    """A minimum with the corner rounded off, over a width set by ``reference``.
+
+    The display hull is two curves meeting at the cusp, and a plain minimum
+    would leave a crease there — visible as a hard edge through a gradient. The
+    cubic blend is OCIO's ``smin_scaled``.
+    """
+    width = builder.mul(
+        builder.scalar("aces2_smooth_cusps", aces2.SMOOTH_CUSPS), reference
+    )
+    blend = builder.div(
+        _std_max(
+            builder,
+            builder.sub(width, builder.op("Abs", [builder.sub(a, b)])),
+            builder.scalar("zero", 0.0),
+        ),
+        width,
+    )
+    return builder.sub(
+        _std_min(builder, a, b),
+        builder.mul(
+            builder.mul(builder.mul(blend, blend), builder.mul(blend, width)),
+            builder.scalar("one_sixth", 1.0 / 6.0),
+        ),
+    )
+
+
+def _remap(builder: GraphBuilder, colourfulness: str, boundary: str, reach: str) -> str:
+    """A Reinhard roll-off from the compression threshold out to the hull.
+
+    Everything below the threshold passes through untouched, so the inside of
+    the gamut is not disturbed to bring the outside in. Where the hull already
+    reaches most of the way to the reach gamut there is nothing worth
+    compressing, and the whole op is the identity.
+    """
+    one = builder.scalar("one", 1.0)
+    proportion = _std_max(
+        builder,
+        builder.div(boundary, reach),
+        builder.scalar("aces2_compression_threshold", aces2.COMPRESSION_THRESHOLD),
+    )
+    threshold = builder.mul(proportion, boundary)
+
+    reach_offset = builder.sub(reach, threshold)
+    scale = builder.div(
+        reach_offset,
+        builder.sub(builder.div(reach_offset, builder.sub(boundary, threshold)), one),
+    )
+    normalised = builder.div(builder.sub(colourfulness, threshold), scale)
+    return builder.where(
+        builder.op(
+            "Or",
+            [
+                builder.op("LessOrEqual", [colourfulness, threshold]),
+                builder.op("GreaterOrEqual", [proportion, one]),
+            ],
+        ),
+        colourfulness,
+        builder.add(
+            threshold,
+            builder.div(builder.mul(scale, normalised), builder.add(one, normalised)),
+        ),
     )

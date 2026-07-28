@@ -391,14 +391,13 @@ spell them; a CDL carries `CDL_SLOPE`, `CDL_OFFSET`, `CDL_POWER`, and
 **The four curve-shaped `GRADING_*` families are deferred, and the deferral is
 the shipped behaviour.** Their parameters are control points rather than
 values, so they arrive with a tensor-valued input or not at all — a different
-interface from the scalars above, and one nothing has yet asked for. The
-trigger is the first consumer that needs curve-based grading rather than CDL.
-Until it fires, each of the four refuses by name, by the same mechanism as any
-unimplemented op, at the command line and in the census (§spec:op-coverage).
-Pinned by test rather than left as an intention: a deferral whose edge a caller
-cannot see is indistinguishable from a wrong answer, and `GradingHueCurve`
-arrived in OCIO 2.5 without a line of this compiler changing — which is what
-deriving the refusal from the emitter registry buys.
+interface from the scalars above. The trigger is the first consumer that needs
+curve-based grading rather than CDL. Until it fires, each of the four refuses
+by name, by the same mechanism as any unimplemented op, at the command line and
+in the census (§spec:op-coverage). Pinned by test: a deferral whose edge a
+caller cannot see is indistinguishable from a wrong answer. `GradingHueCurve`
+arrived in OCIO 2.5 and was refused without a line of this compiler changing,
+which is what deriving the refusal from the emitter registry buys.
 
 **The value decides what is live; OCIO's flag decides only what the value
 cannot.** OCIO's declaration governs its own run-time plumbing — one dynamic

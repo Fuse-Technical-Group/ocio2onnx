@@ -166,9 +166,9 @@ A CDL has no such declaration — OCIO defines no dynamic property for one —
 so a neutral CDL meant to be driven has to be authored off its identity.
 
 The four `GRADING_*` families are not emitted — their parameters are control
-points rather than values, which is a different interface from the scalars
-above. Each refuses by name, like any other op this compiler does not emit,
-until a consumer needs curve-based grading rather than CDL.
+points rather than values. Each refuses by name, like any other op this
+compiler does not emit, until a consumer needs curve-based grading rather
+than CDL.
 
 ## Verification
 

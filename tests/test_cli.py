@@ -204,12 +204,11 @@ def test_an_unemittable_op_refuses_by_name_without_a_traceback(
     assert "Traceback" not in err
 
 
-#: A config carrying two of the curve-shaped grading families. Their
-#: parameters are control points rather than values, so all four are deferred
-#: until a consumer needs curve-based grading rather than CDL
-#: (§spec:dynamic-properties) — and a deferral a caller cannot see the edge of
-#: is indistinguishable from a wrong answer, so the surface it is held on is
-#: the command. `GradingHueCurve` needs profile version 2.5.
+#: A config carrying two of the curve-shaped grading families, which are
+#: deferred rather than emitted (§spec:dynamic-properties). Written here
+#: because a deferral a caller cannot see the edge of is indistinguishable
+#: from a wrong answer, so the surface it is held on is the command.
+#: `GradingHueCurve` needs profile version 2.5.
 CONFIG_WITH_GRADING_CURVES = """ocio_profile_version: 2.5
 roles:
   default: ref
@@ -243,10 +242,10 @@ def config_with_grading_curves(tmp_path):
 def test_a_grading_curve_is_refused_by_name_and_writes_nothing(
     config_with_grading_curves, graph, capsys
 ):
-    """The deferral, from the surface a consumer reaches it on. A grade whose
-    parameters are control points is refused naming every family that blocked
-    it, by the exit code any unimplemented op leaves by — and no graph reaches
-    the output path, because a refusal is not a partial answer."""
+    """The deferral, from the surface a consumer reaches it on: every family
+    that blocked the compile is named, by the exit code any unimplemented op
+    leaves by, and no graph reaches the output path — a refusal is not a
+    partial answer."""
     code = main(
         [
             "compile",

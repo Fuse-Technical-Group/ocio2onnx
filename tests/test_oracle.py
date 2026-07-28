@@ -222,6 +222,16 @@ def test_cpu_reference_does_not_mutate_its_input(config):
     assert np.array_equal(samples, before)
 
 
+def test_cpu_reference_does_not_mutate_a_single_column_of_samples(config, row):
+    """One column is the case the transpose does not already copy, and every
+    caller runs the reference before the graph over the same array: an
+    in-place ``applyRGB`` would feed the graph the reference's own output."""
+    processor = config.getProcessor("ACEScg", "ACES2065-1")
+    samples = row(0.5)
+    cpu_reference(processor, samples)
+    assert samples == pytest.approx(row(0.5))
+
+
 def test_cpu_reference_clears_ocios_fast_math_path(config):
     """The oracle must be the accurate reference, not OCIO's approximate
     ``pow``/``log``/``exp``, whose error is two orders of magnitude above the

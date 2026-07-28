@@ -252,6 +252,15 @@ is a correctness decision, not a tuning knob — the reference has to be
 OCIO's accurate arithmetic, or a compiler error and an oracle error are
 indistinguishable.
 
+**`OPTIMIZATION_LUT_INV_FAST` stays on**, which is the same decision read
+the other way. Cleared, OCIO's inverse `Lut1D` renderer parts company with
+its own fast path beyond tolerance at 5 samples across the pinned config,
+every one at an input of 65504 — and the fast path is the one that agrees
+with the encoding, which puts 65504 at ACEScc 1.468 where the cleared path
+answers 1.4987. A flag is cleared where it makes the reference less
+accurate. Reaching a coverage number by loosening the oracle is a failure,
+not a pass, and so is tightening it past the reference.
+
 *Why an oracle rather than reference constants*: the failure mode here is
 not a wrong constant, it is a subtly wrong *interpretation* — a direction
 inverted, a breakpoint on the wrong side, a LUT indexed by `n` where the

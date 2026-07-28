@@ -681,3 +681,48 @@ def test_a_uniform_lut_widens_the_lattice_at_its_domain_edges(config, op_in):
         assert (values < np.float32(edge)).any()
         assert (values > np.float32(edge)).any()
         assert (values == np.float32(edge)).any()
+
+
+def test_a_nan_input_reads_the_first_slot_rather_than_an_index_no_bound_covers(
+    config, compile_bare, op_in, row
+):
+    """The index is cast to int64 and handed to ``Gather``, and
+    ``Cast(NaN, INT64)`` is implementation-defined — ``INT64_MIN`` on x86,
+    which no table bound covers. Left alone it aborts the whole inference on
+    ONNX Runtime rather than returning a pixel, and an out-of-range ``Gather``
+    is undefined on an executor that does not check.
+
+    NaN is not exotic in the pixels this graph runs on, and it arises inside
+    the graph too: an upstream ``Matrix`` overflowing to ``±inf`` yields
+    ``inf - inf``. So this is asserted here rather than left to the lattice,
+    which is finite throughout and cannot reach it.
+
+    The first slot is where OCIO reads a NaN — measured on the PQ, ACEScc and
+    ADX10 tables, each answering its own ``table[0]``.
+    """
+    for src, dst in (
+        (UNIFORM_SPACES[0], REFERENCE),
+        HALF_DOMAIN_PAIRS[0],
+        INVERSE_PAIRS[0],
+    ):
+        lut = op_in(LUT1D, src, dst)
+        processor = config.getProcessor(lut)
+        samples = row(np.nan, np.inf, -np.inf)
+        got = run_graph(compile_bare(processor), samples)
+        assert np.isfinite(got).all(), f"{src} -> {dst} left the table"
+        assert got.ravel()[0] == pytest.approx(
+            emitters.lut1d_table(lut)[0, 0]
+            if not is_inverse(lut)
+            else emitters.lut1d_inverse_table(lut)[0, 0],
+            rel=1e-6,
+        )
+
+
+def test_an_inverse_lut_with_no_finite_entry_is_refused(config):
+    """A table of NaNs is reachable from a config file and has no curve under
+    it to read backwards. Refused by name rather than raising an ``IndexError``
+    out of the inversion's own arithmetic."""
+    lut = synthetic(curves=(lambda x: np.nan,) * 3)
+    lut.setDirection(OCIO.TRANSFORM_DIR_INVERSE)
+    with pytest.raises(UnsupportedOpError, match="no finite entry"):
+        emit(lut)

@@ -724,6 +724,14 @@ def _invert_channel(domain: np.ndarray, values: np.ndarray) -> np.ndarray:
     end of every run puts one of those two half a domain out.
     """
     finite = np.isfinite(domain) & np.isfinite(values)
+    if not finite.any():
+        # A table of NaNs is reachable from a config file, and there is no
+        # curve under it to read backwards. Refused rather than left to raise
+        # an IndexError out of the arithmetic below.
+        raise UnsupportedOpError(
+            "an inverse Lut1D whose table holds no finite entry is not "
+            "emitted by this compiler; there is no curve to invert"
+        )
     order = np.argsort(domain[finite], kind="stable")
     d, v = domain[finite][order], values[finite][order]
     _refuse_falling_lut1d(d, v)
@@ -938,6 +946,15 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
     An inverse op inverts here, once, and emits as a forward half-domain table
     (``lut1d_inverse_table``). Direction costs no second code path in the
     graph and no search at run time.
+
+    A NaN input is read as the first slot, which is where OCIO reads it —
+    measured on the PQ, ACEScc, and ADX10 tables, each of which answers its
+    own ``table[0]``. It has to be handled rather than left to the arithmetic:
+    ``Cast(NaN, INT64)`` is implementation-defined, yields ``INT64_MIN`` on
+    x86, and would reach ``Gather`` as an index no bound covers. NaN is not
+    exotic in the pixels this graph runs on, and it arrives from inside the
+    graph too — an upstream ``Matrix`` overflowing to ``±inf`` yields
+    ``inf - inf``.
     """
     _refuse_unemitted_lut1d(transform)
     inverse = _is_inverse(transform)
@@ -949,23 +966,24 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
     else:
         position, offset = _uniform_index(builder, x, length)
 
+    zero = builder.scalar("zero", 0.0)
+    position = builder.where(builder.op("IsNaN", [position]), zero, position)
     floor = builder.op("Floor", [position])
     frac = builder.sub(position, floor)
 
     lower = builder.to_int64(floor)
     if offset is not None:
         lower = builder.add(lower, offset)
-    upper = builder.add(
-        lower,
-        builder.to_int64(builder.op("Greater", [frac, builder.scalar("zero", 0.0)])),
-    )
+    upper = builder.add(lower, builder.to_int64(builder.op("Greater", [frac, zero])))
 
     if (table == table[:, :1]).all():
         data = builder.constant("lut1d_table", table[:, 0])
+        entries = length
     else:
         # Channel-major, so channel ``c`` occupies ``[c * length, ...)`` and a
         # constant offset per channel turns a shared index into its own.
         data = builder.constant("lut1d_table", table.T.reshape(-1))
+        entries = length * CHANNELS
         base = builder.per_channel(
             "lut1d_channel_base",
             [channel * length for channel in range(CHANNELS)],
@@ -973,6 +991,22 @@ def emit_lut1d(builder: GraphBuilder, transform: Any, x: str) -> str:
         )
         lower = builder.add(lower, base)
         upper = builder.add(upper, base)
+
+    # Both indices are in range by construction once NaN is out of the way.
+    # Clamped anyway, so that holds locally rather than resting on an argument
+    # spanning the whole index. An out-of-range ``Gather`` is undefined, and
+    # the executor is the consumer's, not this compiler's.
+    lower, upper = (
+        builder.op(
+            "Clip",
+            [
+                index,
+                builder.constant("lut1d_first", 0, dtype=np.int64),
+                builder.constant("lut1d_last", entries - 1, dtype=np.int64),
+            ],
+        )
+        for index in (lower, upper)
+    )
 
     low = builder.op("Gather", [data, lower], axis=0)
     high = builder.op("Gather", [data, upper], axis=0)

@@ -134,7 +134,11 @@ bounds are needed: these transforms cross zero, where a relative measure is
 meaningless, and they also reach 1e8, where an absolute one is.
 
 Coverage is asserted rather than sampled: every transform in a config
-either verifies or refuses with a named op, and none are skipped.
+either verifies or refuses with a named op, and none are skipped. No sample
+is skipped either — where a transform overflows float32, the graph must
+return the same kind of answer the reference did, `+inf` against `+inf` and
+not against `-inf`, and a graph with no finite sample to compare does not
+verify at all.
 
 ```sh
 ocio2onnx verify [--config URI]
@@ -156,9 +160,8 @@ file's terms, not this compiler's. Point it at configs you would run
 Op coverage is complete for the pinned config: every one of its 159
 transforms compiles and verifies against OCIO's CPU processor — the
 closed-form ops, the sampled lookups, and both `FixedFunction` styles,
-including the ACES 2.0 display renderings. Live parameters, packaging, and
-the oracle's non-finite agreement are what is left in
-[ROADMAP.md](ROADMAP.md).
+including the ACES 2.0 display renderings. Live parameters and packaging
+are what is left in [ROADMAP.md](ROADMAP.md).
 
 ## License
 

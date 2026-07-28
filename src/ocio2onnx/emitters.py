@@ -402,3 +402,128 @@ def emit_log(builder: GraphBuilder, transform: Any, x: str) -> str:
         builder.op("Log", [argument]),
         builder.scalar("log_scale", 1.0 / math.log(base)),
     )
+
+
+@dataclasses.dataclass(frozen=True)
+class CameraCurve:
+    """One parametric camera log curve, per channel, with its break resolved.
+
+    ``LogCamera`` is a single op; RED Log3G10, ARRI LogC3 and LogC4, ACEScct,
+    BMDFilm, D-Log, V-Log, DaVinci Intermediate, and the S-Log3 family are all
+    it with different coefficients (§spec:op-coverage). Supporting another
+    camera is a config update, not a change here.
+    """
+
+    base: float
+    log_slope: list[float]
+    log_offset: list[float]
+    lin_slope: list[float]
+    lin_offset: list[float]
+    lin_break: list[float]
+    linear_slope: list[float]
+    log_break: list[float]
+    linear_offset: list[float]
+
+
+def camera_curve(transform: Any) -> CameraCurve:
+    """Read a ``LogCamera``'s parameters and resolve its break.
+
+    ``linear_slope`` is the one parameter OCIO may not supply. It reports an
+    unset slope as NaN rather than as an absent value — 14 of the 24 ops in
+    the pinned config — so "unset" is tested per channel rather than on the
+    container. Taken at face value the NaN yields a graph that is NaN below
+    the break and finite above it.
+
+    Where it is unset, it is derived for C1 continuity: the linear segment
+    leaves the break at the rate the logarithm arrives at it. ``log_break``
+    and ``linear_offset`` then place that segment so the join has no step.
+    """
+    base = float(transform.getBase())
+    ln_base = math.log(base)
+    log_slope = _channels(transform.getLogSideSlopeValue())
+    log_offset = _channels(transform.getLogSideOffsetValue())
+    lin_slope = _channels(transform.getLinSideSlopeValue())
+    lin_offset = _channels(transform.getLinSideOffsetValue())
+    lin_break = _channels(transform.getLinSideBreakValue())
+
+    declared = transform.getLinearSlopeValue()
+    declared = _channels(declared) if declared else [math.nan] * CHANNELS
+
+    linear_slope = []
+    log_break = []
+    linear_offset = []
+    for i in range(CHANNELS):
+        argument = lin_slope[i] * lin_break[i] + lin_offset[i]
+        slope = declared[i]
+        if math.isnan(slope):
+            slope = log_slope[i] * lin_slope[i] / (argument * ln_base)
+        linear_slope.append(slope)
+        log_break.append(log_slope[i] * math.log(argument) / ln_base + log_offset[i])
+        linear_offset.append(log_break[i] - slope * lin_break[i])
+
+    return CameraCurve(
+        base=base,
+        log_slope=log_slope,
+        log_offset=log_offset,
+        lin_slope=lin_slope,
+        lin_offset=lin_offset,
+        lin_break=lin_break,
+        linear_slope=linear_slope,
+        log_break=log_break,
+        linear_offset=linear_offset,
+    )
+
+
+def log_camera_breakpoints(transform: Any) -> list[float]:
+    """The break, which lies in the encoded domain when the op arrives
+    inverse and in the linear one when it does not."""
+    curve = camera_curve(transform)
+    return curve.log_break if _is_inverse(transform) else curve.lin_break
+
+
+@register("LogCameraTransform", breakpoints=log_camera_breakpoints)
+def emit_log_camera(builder: GraphBuilder, transform: Any, x: str) -> str:
+    """A logarithm above the break, a straight line below it."""
+    curve = camera_curve(transform)
+    log_offset = builder.per_channel("logcamera_log_offset", curve.log_offset)
+    lin_offset = builder.per_channel("logcamera_lin_offset", curve.lin_offset)
+    lin_slope = builder.per_channel("logcamera_lin_slope", curve.lin_slope)
+    linear_slope = builder.per_channel("logcamera_linear_slope", curve.linear_slope)
+    linear_offset = builder.per_channel("logcamera_linear_offset", curve.linear_offset)
+
+    if _is_inverse(transform):
+        exponent = builder.div(
+            builder.sub(x, log_offset),
+            builder.per_channel("logcamera_log_slope", curve.log_slope),
+        )
+        curved = builder.div(
+            builder.sub(
+                builder.pow(builder.scalar("logcamera_base", curve.base), exponent),
+                lin_offset,
+            ),
+            lin_slope,
+        )
+        linear = builder.div(builder.sub(x, linear_offset), linear_slope)
+        breaks = builder.per_channel("logcamera_break", curve.log_break)
+    else:
+        argument = builder.op(
+            "Clip",
+            [
+                builder.add(builder.mul(x, lin_slope), lin_offset),
+                builder.scalar("log_floor", LOG_FLOOR),
+            ],
+        )
+        curved = builder.add(
+            builder.mul(
+                builder.op("Log", [argument]),
+                builder.per_channel(
+                    "logcamera_log_scale",
+                    [value / math.log(curve.base) for value in curve.log_slope],
+                ),
+            ),
+            log_offset,
+        )
+        linear = builder.add(builder.mul(x, linear_slope), linear_offset)
+        breaks = builder.per_channel("logcamera_break", curve.lin_break)
+
+    return builder.where(builder.op("Less", [x, breaks]), linear, curved)

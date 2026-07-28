@@ -172,9 +172,9 @@ def test_a_swapped_row_fails_verification_diagnosably(config, config_uri):
 
 def test_an_unimplemented_op_is_refused_by_name(config, config_uri):
     resolved = resolve_colorspaces(
-        config, "Log3G10 REDWideGamutRGB", "ACES2065-1", uri=config_uri
+        config, "ACES2065-1", "Rec.2100-HLG - Display", uri=config_uri
     )
-    with pytest.raises(UnsupportedOpError, match="LogCamera"):
+    with pytest.raises(UnsupportedOpError, match="FixedFunction"):
         compile_processor(resolved)
 
 

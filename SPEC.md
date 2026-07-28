@@ -391,14 +391,38 @@ parameters are control points rather than values, so they arrive with a
 tensor-valued input or not at all, and until then they refuse by the same
 mechanism as any unimplemented op (§spec:op-coverage).
 
-**A parameter is live whether or not OCIO declares it dynamic.** OCIO's flag
-governs its own run-time plumbing — one dynamic property of each type per
-processor, extras dropped with a warning — and a graph has neither the limit
-nor the need for the declaration. An input left unbound reads the default the
-artifact carries, so a knob nobody turns costs a consumer nothing, and each op
-keeps its own default rather than one of them being discarded. A CDL is the
-case that settles it: OCIO declares no dynamic property for one at all, and a
-CDL is the grade this section exists for.
+**The value decides what is live; OCIO's flag decides only what the value
+cannot.** OCIO's declaration governs its own run-time plumbing — one dynamic
+property of each type per processor, extras dropped with a warning — and a
+graph has neither the limit nor the need for it. An input left unbound reads
+the default the artifact carries, so a knob nobody turns costs a consumer
+nothing, and each op keeps its own default rather than one of them being
+discarded. A CDL is the case that settles it: OCIO declares no dynamic property
+for one at all, and a CDL is the grade this section exists for. So a grade
+sitting off its identity proves its own op exists and emits its knobs whatever
+OCIO declares.
+
+A grade sitting *at* its identity is the exception, because it is not
+distinguishable from an absent op and OCIO removes it. There the declaration is
+the only signal left, and OCIO preserves a declared-dynamic op through that
+removal — so an identity grade stays live exactly when its author said it was
+meant to be driven. Catching the undeclared case would mean carrying every
+identity matrix and range in every config into the graph, which is a wider
+price than the knob is worth.
+
+**Liveness is decided before the compiler sees the op, so the optimizer is part
+of this section.** OCIO reports the ops it would run, not the ops the config
+declares, and its rewrites can spend a live parameter before there is anything
+to attach an input to: at a unit power a CDL becomes a matrix and the grade
+arrives as coefficients. That is the primary — slope, offset, and saturation at
+a unit power — which is the commonest CDL there is and precisely the grade a
+consumer means to drive. `OPTIMIZATION_SIMPLIFY_OPS` is therefore cleared. It
+costs nothing to clear, the op count across the pinned config being unchanged,
+and the rewrite it suppresses is not value-preserving in any case: OCIO applies
+it at `OPTIMIZATION_LOSSLESS`, where it drops a clamping CDL's output clamp and
+answers 1.111 for an input the op answers 1.0 on. Which flags are set is a
+correctness decision rather than a tuning knob, the same reading as
+§spec:verification's, and the set is pinned by test.
 
 **The graph inverts what OCIO pre-inverts.** An inverse op's parameters are
 still the forward grade OCIO reports — the knob is the CDL's slope, not the

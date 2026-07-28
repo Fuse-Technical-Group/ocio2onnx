@@ -150,10 +150,20 @@ parameters(model)  # {"EXPOSURE": array([0.5], dtype=float32), ...}
 session.run(None, {"input": image, "EXPOSURE": [1.5]})
 ```
 
-A knob needs an op to hang on. OCIO drops an identity op before the compiler
-sees it, so a template config whose grade is neutral — exposure 0, contrast
-1, slope `[1, 1, 1]` — compiles to a graph with no inputs at all. Author it
-at the value the grade starts from, not at the identity.
+A knob needs an op to hang on, and OCIO drops an op set to its own identity
+before the compiler sees it. So a template config whose grade is neutral —
+exposure 0, contrast 1, slope `[1, 1, 1]` — compiles to a graph with no
+inputs at all. A grade already off its identity is unaffected. To keep a
+neutral one, either author it at the value the grade starts from, or declare
+it dynamic, which OCIO's config syntax spells by *omitting* the parameter:
+
+```yaml
+# exposure is dynamic; the op survives and the graph carries all three knobs
+from_scene_reference: !<ExposureContrastTransform> {style: linear, contrast: 1, gamma: 1}
+```
+
+A CDL has no such declaration — OCIO defines no dynamic property for one —
+so a neutral CDL meant to be driven has to be authored off its identity.
 
 The four `GRADING_*` families are not emitted — their parameters are control
 points rather than values — and refuse by name like any other unimplemented

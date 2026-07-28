@@ -165,7 +165,7 @@ implements rather than a second list beside it; `tools/census.py` is a shim
 over the same code.
 
 ## How ops emit §spec:op-emission
-*Status: in progress*
+*Status: complete*
 
 Every op emits as ONNX arithmetic over parameters read from OCIO's
 transform introspection. `Matrix` is a 1×1 convolution, `Range` a clamp

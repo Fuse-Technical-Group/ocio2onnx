@@ -30,10 +30,10 @@ displays, ADX10, ADX16, and Apple Log (§spec:op-emission). 34 of the 40
 
 ### Inverse 1D LUTs §road:inverse-lut
 
-Invert a monotonic `Lut1D` at compile time onto a uniform domain and emit
+Invert a monotonic `Lut1D` at compile time onto the half domain and emit
 the result as an ordinary table (§spec:op-emission), unblocking the 8
-transforms that carry one. Whether the resampling holds tolerance is the
-harness's finding rather than an assumption. Depends on
+transforms that carry one. The grid is the harness's finding rather than
+an assumption: it measured a uniform one out of tolerance. Depends on
 §road:half-domain-lut.
 
 **Verify:** Compile `ACES2065-1` → `Rec.2100-PQ - Display` and confirm the

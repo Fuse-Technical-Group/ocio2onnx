@@ -216,10 +216,17 @@ purely relative bound is meaningless where these transforms cross zero: a
 matrix row that nearly cancels yields values at which any relative measure
 explodes while the absolute error sits on the float32 noise floor. A
 purely absolute bound fails at the other end, where an input at 65504
-legitimately produces outputs around 1e8. The floor itself belongs to the
-executor rather than the compiler — `Pow` differs between ONNX Runtime and
-OCIO in the last digits — so a tighter bound would measure a math library
-instead of the compiler's reading of the config.
+legitimately produces outputs around 1e8.
+
+**The oracle runs with fast math off.** OCIO's default CPU optimization
+includes `OPTIMIZATION_FAST_LOG_EXP_POW`, an approximate `pow`, `log`, and
+`exp` whose error exceeds this tolerance. Left on, it measures a math
+library rather than the compiler's reading of the config: 110 of the 111
+closed-form transforms verify against OCIO's fast path, and all 111 verify
+against its accurate one. Which optimization flags the oracle runs under
+is a correctness decision, not a tuning knob — the reference has to be
+OCIO's accurate arithmetic, or a compiler error and an oracle error are
+indistinguishable.
 
 *Why an oracle rather than reference constants*: the failure mode here is
 not a wrong constant, it is a subtly wrong *interpretation* — a direction
@@ -261,10 +268,10 @@ for. A consumer whose executor selects reduced precision by default must
 pin float32 for these graphs or accept a documented, measured error
 against the oracle (§spec:verification).
 
-float32 is not exact either, and the residual is not the compiler's to
-remove: `Pow` and the transcendentals differ between executors and OCIO in
-their last digits, which is what sets the verification tolerance rather
-than any choice made here (§spec:verification).
+float32 is not exact either, but the residual that showed up in practice
+was not float32's. It came from the oracle's own approximate `pow`, and
+clearing that flag removes it (§spec:verification). The caution above is
+about the consumer's executor, not about the reference.
 
 ## Non-goals §spec:non-goals
 *Status: complete*

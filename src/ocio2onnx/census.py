@@ -80,7 +80,7 @@ def take(config, uri: str) -> Census:
     needs_lut: list[tuple[str, int, int]] = []
     total = 0
 
-    for label, processor in enumerate_transforms(config, reference):
+    for label, processor in enumerate_transforms(config, reference, uri=uri):
         total += 1
         ops.update(op_names(processor))
 

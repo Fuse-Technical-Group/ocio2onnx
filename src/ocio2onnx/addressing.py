@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Iterator
+from typing import Any
 
 import PyOpenColorIO as OCIO
 
@@ -29,6 +30,11 @@ FALLBACK_REFERENCE = "ACES2065-1"
 
 #: Namespace for the keys stamped onto an emitted model's ``metadata_props``.
 METADATA_PREFIX = "ocio2onnx."
+
+#: What OCIO raises when it refuses. ``ExceptionMissingFile`` does **not**
+#: derive from ``OCIO.Exception`` — the bindings hang both off the builtin —
+#: so catching the latter alone lets a config naming an absent LUT through.
+OCIO_ERRORS = (OCIO.Exception, OCIO.ExceptionMissingFile)
 
 
 class AddressError(ValueError):
@@ -76,7 +82,7 @@ def load_config(uri: str = DEFAULT_CONFIG) -> OCIO.Config:
         )
     try:
         return OCIO.Config.CreateFromFile(uri)
-    except OCIO.Exception as exc:
+    except OCIO_ERRORS as exc:
         raise AddressError(f"cannot load config {uri!r}: {exc}") from exc
 
 
@@ -99,7 +105,7 @@ def resolve_colorspaces(
     _require_colorspace(config, src, uri=uri, role="source")
     _require_colorspace(config, dst, uri=uri, role="target")
     return Resolved(
-        processor=config.getProcessor(src, dst),
+        processor=_processor(config, src, dst, uri=uri),
         config_name=config.getName(),
         config_uri=uri,
         endpoints=f"{src} -> {dst}",
@@ -135,7 +141,7 @@ def resolve_display_view(
     transform.setDisplay(display)
     transform.setView(view)
     return Resolved(
-        processor=config.getProcessor(transform),
+        processor=_processor(config, transform, uri=uri),
         config_name=config.getName(),
         config_uri=uri,
         endpoints=f"{src} -> {display} / {view}",
@@ -143,7 +149,7 @@ def resolve_display_view(
 
 
 def enumerate_transforms(
-    config: OCIO.Config, reference: str | None = None
+    config: OCIO.Config, reference: str | None = None, *, uri: str = ""
 ) -> Iterator[tuple[str, OCIO.Processor]]:
     """Every transform worth measuring: each color space both ways against the
     reference, then each display view."""
@@ -153,8 +159,8 @@ def enumerate_transforms(
         name = space.getName()
         if name == reference:
             continue
-        yield f"{name} -> ref", config.getProcessor(name, reference)
-        yield f"ref -> {name}", config.getProcessor(reference, name)
+        yield f"{name} -> ref", _processor(config, name, reference, uri=uri)
+        yield f"ref -> {name}", _processor(config, reference, name, uri=uri)
 
     for display in config.getDisplays():
         for view in config.getViews(display):
@@ -162,7 +168,23 @@ def enumerate_transforms(
             transform.setSrc(reference)
             transform.setDisplay(display)
             transform.setView(view)
-            yield f"view {display}/{view}", config.getProcessor(transform)
+            yield f"view {display}/{view}", _processor(config, transform, uri=uri)
+
+
+def _processor(config: OCIO.Config, *request: Any, uri: str) -> OCIO.Processor:
+    """Build a processor, reporting OCIO's own refusal as an ``AddressError``.
+
+    A config parses long before its `FileTransform` references resolve, so a
+    config naming a LUT that is missing or unreadable fails here rather than
+    at load. That is still a request the loaded config cannot serve, so the
+    caller sees the one error type it already handles.
+    """
+    try:
+        return config.getProcessor(*request)
+    except OCIO_ERRORS as exc:
+        raise AddressError(
+            f"{_label(config, uri)} cannot build a processor: {exc}"
+        ) from exc
 
 
 def _require_colorspace(config: OCIO.Config, name: str, *, uri: str, role: str) -> None:
@@ -176,4 +198,6 @@ def _require_colorspace(config: OCIO.Config, name: str, *, uri: str, role: str) 
 def _label(config: OCIO.Config, uri: str) -> str:
     """How an error message names the config a check was made against."""
     name = config.getName()
-    return f"config {name!r} ({uri})" if name else f"config {uri}"
+    if name and uri:
+        return f"config {name!r} ({uri})"
+    return f"config {name or uri}"

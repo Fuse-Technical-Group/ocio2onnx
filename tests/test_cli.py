@@ -134,6 +134,59 @@ def test_an_unloadable_config_is_refused_without_a_traceback(graph, capsys):
     assert "Traceback" not in capsys.readouterr().err
 
 
+#: A config that parses but names a LUT that is not there. OCIO resolves a
+#: `FileTransform` lazily, at getProcessor rather than at load, so this is the
+#: refusal that escapes if only load_config is guarded.
+CONFIG_WITH_A_MISSING_LUT = """ocio_profile_version: 2
+search_path: luts
+roles:
+  default: ref
+  reference: ref
+colorspaces:
+  - !<ColorSpace>
+    name: ref
+  - !<ColorSpace>
+    name: broken
+    from_scene_reference: !<FileTransform> {src: absent.spi1d}
+"""
+
+
+@pytest.fixture
+def config_with_a_missing_lut(tmp_path):
+    path = tmp_path / "broken.ocio"
+    path.write_text(CONFIG_WITH_A_MISSING_LUT)
+    return str(path)
+
+
+def test_a_config_naming_a_missing_lut_is_refused_without_a_traceback(
+    config_with_a_missing_lut, graph, capsys
+):
+    code = main(
+        [
+            "compile",
+            "--from",
+            "broken",
+            "--to",
+            "ref",
+            "-o",
+            graph,
+            "--config",
+            config_with_a_missing_lut,
+        ]
+    )
+    assert code == CANNOT_RESOLVE
+    err = capsys.readouterr().err
+    assert "cannot build a processor" in err
+    assert "Traceback" not in err
+
+
+def test_an_unwritable_output_path_is_refused_without_a_traceback(tmp_path, capsys):
+    missing = str(tmp_path / "no-such-directory" / "graph.onnx")
+    code = main(["compile", "--from", PAIR[0], "--to", PAIR[1], "-o", missing])
+    assert code == FAILED
+    assert "Traceback" not in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "argv",
     [

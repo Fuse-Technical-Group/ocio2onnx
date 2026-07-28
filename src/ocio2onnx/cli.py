@@ -53,6 +53,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _refuse(exc, CANNOT_RESOLVE)
     except UnsupportedOpError as exc:
         return _refuse(exc, WILL_NOT_EMIT)
+    except OSError as exc:
+        # An unwritable output path or an unreadable config file is the
+        # caller's answer too, not a crash.
+        return _refuse(exc, FAILED)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -190,7 +194,7 @@ def _verify(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     worst_abs = worst_rel = 0.0
     total = 0
 
-    for label, processor in enumerate_transforms(config, reference):
+    for label, processor in enumerate_transforms(config, reference, uri=args.config):
         total += 1
         refused = unsupported_ops(processor)
         if refused:

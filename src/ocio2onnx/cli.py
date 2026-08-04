@@ -100,9 +100,17 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output", required=True, metavar="PATH", help="where to write the graph"
     )
     emit.add_argument(
+        "--cuda",
+        metavar="PATH",
+        help="also emit the transform as a fused CUDA kernel source "
+        "(§spec:cuda-kernel)",
+    )
+    emit.add_argument(
         "--verify",
         action="store_true",
-        help="hold the graph against OCIO's CPU processor before writing it",
+        help="hold the artifacts against OCIO's CPU processor before writing "
+        "them; with --cuda this compiles and executes the kernel, which "
+        "needs a CUDA device",
     )
     emit.set_defaults(run=_compile)
 
@@ -161,6 +169,14 @@ def _compile(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
     resolved = _resolve(parser, args)
     model = compile_processor(resolved)
 
+    # Generated before anything verifies or writes, so a shader the
+    # transpiler refuses leaves both paths unwritten (§spec:cuda-kernel).
+    source = None
+    if args.cuda:
+        from ocio2onnx import cuda
+
+        source = cuda.kernel_source(resolved)
+
     if args.verify:
         # The oracle executes a graph, which needs a runtime; compiling does
         # not, so the import stays inside the branch that uses it.
@@ -171,8 +187,23 @@ def _compile(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         if not result.ok:
             return FAILED
 
+        if source is not None:
+            # No device is not a quiet pass: a caller asking for a verified
+            # kernel on a machine that cannot execute one gets an answer.
+            try:
+                kernel = cuda.verify(resolved, source)
+            except (ImportError, RuntimeError) as exc:
+                return _refuse(exc, FAILED)
+            print(f"{'kernel verified' if kernel.ok else 'kernel FAILED'}: {kernel}")
+            if not kernel.ok:
+                return FAILED
+
     onnx.save(model, args.output)
     print(f"wrote {args.output}")
+    if source is not None:
+        with open(args.cuda, "w") as artifact:
+            artifact.write(source)
+        print(f"wrote {args.cuda}")
     _report_parameters(model)
     return OK
 

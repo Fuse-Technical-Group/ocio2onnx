@@ -19,7 +19,6 @@ from typing import Any
 
 import numpy as np
 import onnx
-import onnxruntime as ort
 import PyOpenColorIO as OCIO
 
 from ocio2onnx import emitters
@@ -260,6 +259,11 @@ def run_graph(
     certified on evidence it never produced, which is the one failure this
     module exists to prevent (§spec:verification).
     """
+    # Executing a graph is the one thing here that needs the runtime; a
+    # caller verifying a different executor (`cuda.verify`) compares against
+    # the same reference without it.
+    import onnxruntime as ort
+
     bound = dict(parameters or {})
     if INPUT in bound:
         raise ValueError(f"{INPUT!r} is the image, not a live parameter")
@@ -275,7 +279,11 @@ def run_graph(
 
 
 def compare(
-    want: np.ndarray, got: np.ndarray, samples: np.ndarray | None = None
+    want: np.ndarray,
+    got: np.ndarray,
+    samples: np.ndarray | None = None,
+    *,
+    tolerance: Tolerance = TOLERANCE,
 ) -> Comparison:
     """Hold the graph's output against the reference (§spec:verification).
 
@@ -287,6 +295,9 @@ def compare(
 
     Agreement also needs one finite comparison. A reference that is non-finite
     across the whole lattice otherwise certifies a graph on no evidence.
+
+    ``tolerance`` defaults to the graph's bound; an executor whose arithmetic
+    is legitimately different hands over its own (`cuda.GPU_TOLERANCE`).
     """
     want = np.asarray(want, dtype=np.float64)
     got = np.asarray(got, dtype=np.float64)
@@ -305,7 +316,7 @@ def compare(
     g = got.ravel()[usable]
     deviation = np.abs(g - w)
     relative = np.divide(deviation, np.abs(w), out=np.zeros_like(w), where=w != 0)
-    bound = TOLERANCE.bound(w)
+    bound = tolerance.bound(w)
     over = deviation > bound
 
     def input_at(index):

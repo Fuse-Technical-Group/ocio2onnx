@@ -49,7 +49,10 @@ bypassing the arithmetic does not.
 executors, so a consumer picks its own runtime and inherits that runtime's
 fusion. A 1×1 convolution followed by a short elementwise chain is
 memory-bandwidth bound and fuses to a single pass — the same place a
-hand-written kernel lands.
+hand-written kernel lands. That holds for the short chains most transforms
+are; where it measurably breaks — the ACES 2.0 display renders, whose
+table lookups split the graph into memory-bound segments no executor
+rejoins — §spec:cuda-kernel carries the difference.
 
 *Rejected*: emitting **torch**, which couples every consumer to one
 framework for math that is framework-independent, and which has no
@@ -460,6 +463,51 @@ float32 is not exact either, but the residual that showed up in practice
 was not float32's. It came from the oracle's own approximate `pow`, and
 clearing that flag removes it (§spec:verification). The caution above is
 about the consumer's executor, not about the reference.
+
+## CUDA kernel §spec:cuda-kernel
+*Status: complete*
+
+A graph executor pays a full-frame memory pass per fusion segment, and the
+ACES 2.0 display renders carry a chain those executors cannot rejoin: at 4K
+on an RTX 6000 Ada, 9 ms under TensorRT against the 0.3 ms one fused pass
+costs. The gap is structural, not tunable — reduced precision recovers a
+fifth, and baking the render into a shaped `Lut3D` fails outright: the
+gamut compressor has near-cusp curvature that a 129³ lattice still misses
+by 0.13 in display space on saturated brights. So the one transform class
+that defeats the graph ships beside it as a second artifact: a fused CUDA
+kernel.
+
+The kernel is not written here; it is transpiled from the shader OCIO's own
+GPU renderer emits for the same processor at the same optimization flags,
+so its math has the same author as the graph's and the two artifacts
+disagree only on arithmetic. The emitted `.cu` is self-contained — tables
+embedded as global-memory arrays, no includes, half conversion by PTX — and
+carries two planar RGB entry points, `apply_f32` and `apply_f16`. Alpha is
+absent for §spec:emitted-graph's reason. A consumer compiles the file with
+NVRTC and launches it on the stream its tensors already occupy; execution
+in production stays the consumer's concern (§spec:non-goals), and this
+module executes a kernel only to verify it.
+
+The transpiler covers the dialect OCIO emits for closed-form transforms
+and nearest-sampled 1D tables, which is the ACES 2.0 family and every
+analytic transform. What falls outside is refused by name before anything
+is emitted, as ops are (§spec:op-coverage): a uniform, which is a dynamic
+property the kernel would bake stale; and an interpolated or
+multi-dimensional texture, which is a LUT — the graph already carries
+those at full speed, so the refusal names the artifact that serves them.
+
+Verification holds the compiled kernel against the same lattice and CPU
+reference as the graph, at its own bound (`cuda.GPU_TOLERANCE`): GPU
+transcendentals are not libm, and OCIO's GPU renderer sits the same
+distance from its CPU renderer. The kernel is compiled and verified under
+`--use_fast_math`, which is the contract, not an option — it selects the
+hardware log2/exp2 paths GLSL's `pow` resolves to, and the accurate paths
+cost three times the whole kernel for a difference inside the band. Two
+measured facts govern the generated code: tables live in global memory
+because divergent indices serialize the constant cache 32-way, at five
+times the kernel's cost; and float literals carry suffixes because one
+unsuffixed literal drops an expression chain to double-precision
+arithmetic.
 
 ## Non-goals §spec:non-goals
 *Status: complete*

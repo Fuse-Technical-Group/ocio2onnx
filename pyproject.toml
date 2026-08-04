@@ -25,6 +25,10 @@ dependencies = [
 # The oracle harness executes an emitted graph, which needs a runtime.
 # Compiling does not, so this stays out of the runtime dependency set.
 verify = ["onnxruntime>=1.19"]
+# Compiling and executing the CUDA kernel needs the driver bindings and the
+# NVRTC library. Generating its source does not, so these stay optional the
+# same way the ONNX runtime does (§spec:cuda-kernel).
+cuda = ["cuda-python>=13", "nvidia-cuda-nvrtc>=13"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]

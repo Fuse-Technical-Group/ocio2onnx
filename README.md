@@ -93,6 +93,21 @@ ocio2onnx compile --display "Rec.2100-HLG - Display" --view "Video (colorimetric
 ocio2onnx compile --display "sRGB - Display" --view "ACES 2.0 - SDR 100 nits (Rec.709)" -o aces.onnx
 ```
 
+`--cuda` writes a second artifact beside the graph: the same transform as
+one fused CUDA kernel, transpiled from the shader OCIO's own GPU renderer
+emits. It exists for the transform class that defeats graph executors —
+the ACES 2.0 display renders cost 9 ms at 4K under TensorRT and 0.26 ms as
+the fused kernel on the same GPU. The `.cu` file is self-contained: NVRTC
+compiles it with `--use_fast_math` and no include paths, and it exposes
+planar RGB `apply_f32`/`apply_f16` entry points. With `--verify`, the
+kernel is also compiled, run, and held against the CPU processor, which
+needs a CUDA device and the `cuda` extra:
+
+```sh
+ocio2onnx compile --display "sRGB - Display" --view "ACES 2.0 - SDR 100 nits (Rec.709)" \
+    -o aces.onnx --cuda aces.cu --verify
+```
+
 A transform carrying an op the compiler does not emit is refused, naming
 the op, the transform and its endpoints, and exits non-zero:
 

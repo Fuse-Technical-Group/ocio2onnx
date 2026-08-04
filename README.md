@@ -254,18 +254,23 @@ both wrong: it is not framework overhead, and it is not register
 pressure.
 
 A near-trivial transform — one `Matrix` — runs 0.430 ms against 0.594 ms
-at 4K, so the floor either side of the fence is within 1.4x. The gap is
-this transform's arithmetic, and Nsight Compute says where it goes.
+at 4K, so the floor either side of the fence is within 1.4x. The rest is
+this transform's arithmetic, and Nsight counts it on both sides: per 4K
+frame the graph executes **1.62 billion** warp instructions against the
+shader's **158 million**, which is 10x the instructions for 8x the time.
+Nothing is being executed badly. The graph issues at a *higher* rate than
+the shader manages, no kernel spills a register, and occupancy runs
+49-87%. There is simply ten times as much of it.
+
+Where the extra goes is legible on both sides. The shader's throughput is
+dominated by its special-function pipe and its texture cache answers 87%
+of the reads it makes, so the two tables OCIO bakes cost it almost
+nothing — and evaluating that same appearance model in closed form
+instead (§spec:op-coverage) is one compute-bound kernel of 2.48 ms here.
 TensorRT compiles the graph to one `Myelin` layer, but a layer is not a
-launch: it is **six kernels**. Five of them run at 82-93% of the card's
-memory bandwidth, which is the cost of handing a 99.5 MB intermediate
-from one kernel to the next; the sixth is compute-bound at roughly 4,000
-instructions per pixel, and it is the appearance model this compiler
-evaluates where OCIO's shader reads two baked textures
-(§spec:op-coverage). So about half the remaining gap is intermediates
-that were never materialised in a fragment shader, and about half is
-arithmetic the shader does not do — the half this project trades for on
-purpose. Register spilling is none of it: all six kernels spill nothing.
+launch: it is six kernels, and the other five run at 82-93% of memory
+bandwidth handing a 99.5 MB intermediate along — traffic a fragment
+shader never generates because its intermediates never leave registers.
 
 Getting to six kernels is why `Matrix` emits nine multiplies over the
 channels rather than the 1x1 `Conv` that is the same arithmetic in one

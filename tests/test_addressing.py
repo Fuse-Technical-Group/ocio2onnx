@@ -2,6 +2,8 @@
 (§spec:emitted-graph).
 """
 
+import re
+
 import PyOpenColorIO as OCIO
 import pytest
 
@@ -46,8 +48,11 @@ def test_unresolvable_uri_names_the_uri():
 
 
 def test_missing_file_names_the_path(tmp_path):
+    # `match` is a regex, and a Windows temp path is full of backslashes that
+    # read as escapes -- `\U` under this runner's home, which is not even a
+    # valid one. Escaped, so the assertion is the substring it looks like.
     missing = tmp_path / "absent.ocio"
-    with pytest.raises(AddressError, match=str(missing)):
+    with pytest.raises(AddressError, match=re.escape(str(missing))):
         load_config(str(missing))
 
 

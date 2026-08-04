@@ -4,20 +4,6 @@ Derived from SPEC.md. Every item traces to a spec gap. Sections are
 in build-dependency order. Completed work is removed; presence here
 means the work is not done.
 
-## Live parameters §road:live-parameters
-
-The scalar and per-channel properties compile to graph inputs
-(§spec:dynamic-properties), so a consumer varies a grade per frame without
-recompiling. What is left is the shape those inputs cannot take.
-
-### Curve-shaped grading properties §road:grading-curves
-
-The four `GRADING_*` families, whose parameters are control points rather
-than values (§spec:dynamic-properties). Deferred behind a named trigger:
-the first consumer that needs curve-based grading rather than CDL. Until
-then the compiler refuses them by the same mechanism as any unimplemented
-op (§spec:op-coverage).
-
 ## Packaging §road:packaging
 
 Publish the compiler as an installable package with the oracle harness

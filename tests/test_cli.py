@@ -17,6 +17,7 @@ actually consumes.
 """
 
 import importlib.metadata
+import pathlib
 import re
 
 import onnx
@@ -254,6 +255,85 @@ def test_an_unemittable_op_refuses_by_name_without_a_traceback(
     assert UNEMITTABLE_STYLE in err
     assert "unemittable -> ref" in err
     assert "Traceback" not in err
+
+
+#: A config carrying two of the curve-shaped grading families, which are
+#: deferred rather than emitted (§spec:dynamic-properties). Written here
+#: because a deferral a caller cannot see the edge of is indistinguishable
+#: from a wrong answer, so the surface it is held on is the command.
+#: `GradingHueCurve` needs profile version 2.5.
+CONFIG_WITH_GRADING_CURVES = """ocio_profile_version: 2.5
+roles:
+  default: ref
+  reference: ref
+colorspaces:
+  - !<ColorSpace>
+    name: ref
+  - !<ColorSpace>
+    name: graded
+    from_scene_reference: !<GroupTransform>
+      children:
+        - !<GradingRGBCurveTransform>
+          style: log
+          red: {control_points: [0, 0, 0.5, 0.6, 1, 1]}
+        - !<GradingHueCurveTransform>
+          style: log
+          hue_hue: {control_points: [0, 0.1, 0.5, 0.5, 1, 1]}
+"""
+
+#: What that config's refusal names, in the order the ops appear.
+GRADING_CURVES = ("GradingRGBCurve", "GradingHueCurve")
+
+
+@pytest.fixture
+def config_with_grading_curves(tmp_path):
+    path = tmp_path / "curves.ocio"
+    path.write_text(CONFIG_WITH_GRADING_CURVES)
+    return str(path)
+
+
+def test_a_grading_curve_is_refused_by_name_and_writes_nothing(
+    config_with_grading_curves, graph, capsys
+):
+    """The deferral, from the surface a consumer reaches it on: every family
+    that blocked the compile is named, by the exit code any unimplemented op
+    leaves by, and no graph reaches the output path — a refusal is not a
+    partial answer."""
+    code = main(
+        [
+            "compile",
+            "--from",
+            "ref",
+            "--to",
+            "graded",
+            "-o",
+            graph,
+            "--config",
+            config_with_grading_curves,
+        ]
+    )
+    assert code == WILL_NOT_EMIT
+
+    err = capsys.readouterr().err
+    for op in GRADING_CURVES:
+        assert op in err
+    assert "ref -> graded" in err
+    assert "refused rather than approximated" in err
+    assert "Traceback" not in err
+    assert not pathlib.Path(graph).exists()
+
+
+def test_the_census_counts_a_deferred_grading_family_as_refused(
+    config_with_grading_curves, capsys
+):
+    """The other reading of the same deferral: a consumer asks what a config
+    needs and the report names the ops rather than reporting silence
+    (§spec:op-coverage)."""
+    assert main(["census", "--config", config_with_grading_curves]) == OK
+    printed = capsys.readouterr().out
+    assert "refused: 2/2" in printed
+    for op in GRADING_CURVES:
+        assert op in printed
 
 
 #: A config whose transform is non-finite over the whole lattice. A NaN

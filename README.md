@@ -181,8 +181,9 @@ A CDL has no such declaration — OCIO defines no dynamic property for one —
 so a neutral CDL meant to be driven has to be authored off its identity.
 
 The four `GRADING_*` families are not emitted — their parameters are control
-points rather than values — and refuse by name like any other unimplemented
-op. See [ROADMAP.md](ROADMAP.md).
+points rather than values. Each refuses by name, like any other op this
+compiler does not emit, until a consumer needs curve-based grading rather
+than CDL.
 
 ## Verification
 
@@ -223,8 +224,8 @@ closed-form ops, the sampled lookups, and both `FixedFunction` styles,
 including the ACES 2.0 display renderings. A grade is live: exposure,
 contrast, gamma, and the ASC CDL quartet emit as graph inputs, each swept
 against the oracle rather than checked at its default. The curve-shaped
-`GRADING_*` families and packaging are what is left in
-[ROADMAP.md](ROADMAP.md).
+`GRADING_*` families are deferred until a consumer needs one, and refuse by
+name meanwhile. Packaging is what is left in [ROADMAP.md](ROADMAP.md).
 
 ## License
 

@@ -262,6 +262,14 @@ Nothing is being executed badly. The graph issues at a *higher* rate than
 the shader manages, no kernel spills a register, and occupancy runs
 49-87%. There is simply ten times as much of it.
 
+Those two counts are the only figures compared across the two profilers,
+and deliberately: each clamps the clock itself — 1.41 GHz for the
+shader's capture against 1.80 GHz for the graph's — so their rates and
+durations do not sit on the same axis, while a count of instructions does
+not care what clock retired it. Pinning does not reach them either. The
+frame times above are `bench`'s, where both sides run in one harness at
+one pinned clock.
+
 Where the extra goes is legible on both sides. The shader's throughput is
 dominated by its special-function pipe and its texture cache answers 87%
 of the reads it makes, so the two tables OCIO bakes cost it almost

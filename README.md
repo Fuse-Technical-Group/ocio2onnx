@@ -247,21 +247,36 @@ ONNX / CUDA           20.750 ms      77.539 ms       ~550-1,800 ms
 ```
 
 **OCIO's shader is about 8x faster than the graph under TensorRT, and
-140x faster than the ONNX Runtime CUDA provider.** TensorRT compiles the
-whole 513-node graph into a single fused `Myelin` region, so what is left
-of the gap is inside one kernel rather than between ten. What it is made
-of is not measured here — this compiler does evaluate in closed form what
-the shader reads out of a texture (§spec:op-coverage), which is
-arithmetic the shader never runs, but nothing below establishes that as
-the cause. The CUDA provider fuses nothing and pays for every node one at
-a time.
+140x faster than the ONNX Runtime CUDA provider.** The CUDA provider
+fuses nothing and pays for every node one at a time. What TensorRT is
+paying for is worth stating precisely, because two obvious answers are
+both wrong: it is not framework overhead, and it is not register
+pressure.
 
-That single region is why `Matrix` emits nine multiplies over the channels
-rather than the 1x1 `Conv` that is the same arithmetic in one node
-(§spec:op-emission). Emitted as a convolution the graph was **2.256 ms and
-8.870 ms** — TensorRT cut it into ten layers, six `CaskConvolution`
-alternating with four fused regions, because a convolution is a barrier no
-pointwise fusion crosses. Ten round trips through a 99.5 MB tensor at 4K,
+A near-trivial transform — one `Matrix` — runs 0.430 ms against 0.594 ms
+at 4K, so the floor either side of the fence is within 1.4x. The gap is
+this transform's arithmetic, and Nsight Compute says where it goes.
+TensorRT compiles the graph to one `Myelin` layer, but a layer is not a
+launch: it is **six kernels**. Five of them run at 82-93% of the card's
+memory bandwidth, which is the cost of handing a 99.5 MB intermediate
+from one kernel to the next; the sixth is compute-bound at roughly 4,000
+instructions per pixel, and it is the appearance model this compiler
+evaluates where OCIO's shader reads two baked textures
+(§spec:op-coverage). So about half the remaining gap is intermediates
+that were never materialised in a fragment shader, and about half is
+arithmetic the shader does not do — the half this project trades for on
+purpose. Register spilling is none of it: all six kernels spill nothing.
+
+Getting to six kernels is why `Matrix` emits nine multiplies over the
+channels rather than the 1x1 `Conv` that is the same arithmetic in one
+node (§spec:op-emission). Emitted as a convolution the graph was **2.256
+ms and 8.870 ms** in ten layers — six `CaskConvolution` alternating with
+four fused regions — and a trace names the cost more bluntly than "a
+fusion barrier" does: that frame carried two whole-tensor permutation
+kernels which together outweighed all seven of its pointwise kernels
+combined. A convolution wants NHWC and the rest of the graph is NCHW, so
+TensorRT converted the image and converted it back; its build log names
+`Reformat` 116 times for that spelling and never for this one. All of it
 for a spelling that changes nothing about the result: on the CPU the two
 are bit-identical. The ONNX Runtime CUDA provider is the one loser, about
 13% slower on this transform and 2x on a bare matrix, because it fuses

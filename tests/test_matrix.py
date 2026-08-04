@@ -1,4 +1,4 @@
-"""``Matrix`` emits a 1x1 convolution, and the oracle says whether the
+"""``Matrix`` emits pointwise arithmetic, and the oracle says whether the
 parameters were read correctly (§spec:verification, §spec:op-emission).
 
 ``Matrix`` is the op whose correctness is legible by inspection, which is what
@@ -19,6 +19,7 @@ from ocio2onnx.addressing import (
     resolve_colorspaces,
 )
 from ocio2onnx.builder import (
+    CHANNELS,
     IMAGE_SHAPE,
     INPUT,
     IR_VERSION,
@@ -78,12 +79,46 @@ def test_an_unregistered_transform_yields_no_emitter():
     assert emitters.breakpoints(unregistered) == []
 
 
-def test_matrix_emits_a_1x1_convolution():
+def test_matrix_emits_pointwise_arithmetic_and_no_convolution():
+    """The channels taken apart, nine multiplies, and put back.
+
+    Not the 1x1 convolution that is the same arithmetic in one node: a
+    convolution is a barrier no pointwise fusion crosses, and the graph is one
+    fused region without it (§spec:op-emission).
+    """
     model = emit(matrix_transform(np.eye(4)))
-    assert [node.op_type for node in model.graph.node] == ["Conv", "Identity"]
-    weight, bias = model.graph.initializer
-    assert onnx.numpy_helper.to_array(weight).shape == (3, 3, 1, 1)
-    assert onnx.numpy_helper.to_array(bias).shape == (3,)
+    kinds = [node.op_type for node in model.graph.node]
+    assert "Conv" not in kinds
+    assert kinds[:CHANNELS] == ["Gather"] * CHANNELS
+    assert kinds[-2:] == ["Concat", "Identity"]
+    assert kinds.count("Mul") == CHANNELS * CHANNELS
+    assert kinds.count("Add") == CHANNELS * (CHANNELS - 1)
+
+
+def test_the_emitted_coefficients_are_the_matrix_read_row_major():
+    """A swapped row is visible in the constants, which is the property that
+    makes this the right op to exercise the harness on."""
+    matrix = np.arange(1.0, 10.0).reshape(CHANNELS, CHANNELS)
+    four = np.eye(4)
+    four[:CHANNELS, :CHANNELS] = matrix
+    model = emit(matrix_transform(four))
+    weights = [
+        onnx.numpy_helper.to_array(initializer).item()
+        for initializer in model.graph.initializer
+        if initializer.data_type == onnx.TensorProto.FLOAT
+    ]
+    assert weights == list(matrix.ravel())
+
+
+def test_a_zero_offset_emits_no_addition():
+    """Which every matrix in the pinned config carries, and an ``Add`` of zero
+    is a whole pass over the image on a runtime that fuses nothing."""
+    offset = (0.25, 0.0, 0.0, 0.0)
+    added = [node.op_type for node in emit(matrix_transform(np.eye(4))).graph.node]
+    with_offset = [
+        node.op_type for node in emit(matrix_transform(np.eye(4), offset)).graph.node
+    ]
+    assert with_offset.count("Add") == added.count("Add") + 1
 
 
 def test_the_emitted_graph_is_float32_with_spatial_dimensions_free():

@@ -348,12 +348,12 @@ def _checked_style(
 
 @register("Matrix")
 def emit_matrix(builder: GraphBuilder, transform: Any, x: str) -> str:
-    """A 1x1 convolution over the top-left 3x3 (§spec:op-emission).
+    """The top-left 3x3 and the first three offsets (§spec:op-emission).
 
     OCIO hands over a row-major 4x4 and a 4-offset. The alpha row is identity
     in every transform in the pinned config, and alpha bypasses the graph
     anyway (§spec:emitted-graph), so only the 3x3 and the first three offsets
-    reach the weight and the bias.
+    reach the arithmetic.
 
     An inverse transform inverts here, in float64, and casts to float32 only
     at the initializer: inverting a near-singular matrix at float32 would
@@ -366,11 +366,67 @@ def emit_matrix(builder: GraphBuilder, transform: Any, x: str) -> str:
         matrix = np.linalg.inv(matrix)
         offset = -(matrix @ offset)
 
-    weight = builder.constant(
-        "matrix_weight", matrix[:CHANNELS, :CHANNELS].reshape(CHANNELS, CHANNELS, 1, 1)
+    return _matrix3(
+        builder, "matrix", matrix[:CHANNELS, :CHANNELS], x, offset[:CHANNELS]
     )
-    bias = builder.constant("matrix_bias", offset[:CHANNELS])
-    return builder.op("Conv", [x, weight, bias], kernel_shape=[1, 1])
+
+
+def _matrix3(
+    builder: GraphBuilder,
+    hint: str,
+    matrix: np.ndarray,
+    x: str,
+    offset: np.ndarray | None = None,
+) -> str:
+    """A 3x3 as nine multiplies over the channels taken apart.
+
+    The obvious spelling is a 1x1 convolution: ONNX has the op, it is one
+    node, and it is the same arithmetic. It was also the graph's largest
+    avoidable cost. A convolution is a barrier no pointwise fusion crosses,
+    so the six matrices in this config's heaviest transform cut TensorRT's
+    engine into ten layers — six `CaskConvolution` alternating with four
+    fused regions — and at 4K that is ten round trips through a 99.5 MB
+    tensor. Spelled pointwise the same transform compiles to a single fused
+    region: 8.87 ms to 4.38 ms per 4K frame, and the engine that has to be
+    built per shape from about six seconds to about two (§spec:op-emission).
+
+    Summing a row left to right is what makes this bit-identical to the
+    convolution on the CPU, which is where the reference runs. The other
+    pointwise spellings are not free lunches and were measured, not assumed:
+    a permutation `Gather` per term fuses just as well and runs three times
+    *slower* than the convolution, and a broadcast against a `ReduceSum`
+    fuses and gains nothing.
+    """
+    matrix = np.asarray(matrix, dtype=np.float64)
+    channels = [_channel(builder, x, index) for index in range(CHANNELS)]
+
+    rows = []
+    for row in range(CHANNELS):
+        total = builder.mul(channels[0], builder.scalar(hint, matrix[row, 0]))
+        for column in range(1, CHANNELS):
+            weight = builder.scalar(hint, matrix[row, column])
+            total = builder.add(total, builder.mul(channels[column], weight))
+        # Every offset OCIO reports for a matrix in the pinned config is zero,
+        # and an `Add` of one is a whole pass over the image on a runtime that
+        # fuses nothing. Emitted only where there is something to add.
+        if offset is not None and offset[row] != 0.0:
+            total = builder.add(total, builder.scalar(f"{hint}_offset", offset[row]))
+        rows.append(total)
+
+    return builder.op("Concat", rows, axis=CHANNEL_AXIS)
+
+
+def _channel(builder: GraphBuilder, x: str, index: int) -> str:
+    """One channel of a ``(N, 3, H, W)`` tensor, still rank four.
+
+    ``Gather`` with a one-element index keeps the axis, so the result
+    broadcasts against the other two channels with no reshaping.
+    """
+    return builder.op(
+        "Gather",
+        [x, builder.constant(f"channel_{index}", [index], dtype=np.int64)],
+        axis=CHANNEL_AXIS,
+    )
 
 
 def range_bounds(transform: Any) -> tuple[float, float, float, float]:
@@ -1297,27 +1353,6 @@ def _cone_expand(builder: GraphBuilder, x: str) -> str:
         "Min", [builder.op("Abs", [x]), builder.scalar("cone_limit", aces2.CONE_LIMIT)]
     )
     return builder.mul(builder.op("Sign", [x]), _expand_unsigned(builder, limited))
-
-
-def _matrix3(builder: GraphBuilder, hint: str, matrix: np.ndarray, x: str) -> str:
-    """A 3x3 as a 1x1 convolution, as ``emit_matrix`` emits one."""
-    weight = builder.constant(
-        hint, np.asarray(matrix).reshape(CHANNELS, CHANNELS, 1, 1)
-    )
-    return builder.op("Conv", [x, weight], kernel_shape=[1, 1])
-
-
-def _channel(builder: GraphBuilder, x: str, index: int) -> str:
-    """One channel of a ``(N, 3, H, W)`` tensor, still rank four.
-
-    ``Gather`` with a one-element index keeps the axis, so the result
-    broadcasts against the other two channels with no reshaping.
-    """
-    return builder.op(
-        "Gather",
-        [x, builder.constant(f"channel_{index}", [index], dtype=np.int64)],
-        axis=CHANNEL_AXIS,
-    )
 
 
 def _sample(builder: GraphBuilder, table: str, index: str) -> str:

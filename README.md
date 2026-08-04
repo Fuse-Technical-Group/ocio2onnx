@@ -241,23 +241,36 @@ output transform:
 
 ```text
                      1920x1080      3840x2160        setup
-OCIO GLSL              0.168 ms       0.554 ms       ~70-125 ms
-ONNX / TensorRT        2.305 ms       8.756 ms       ~6,000 ms
-ONNX / CUDA           18.302 ms      68.746 ms       ~600-1,500 ms
+OCIO GLSL              0.157 ms       0.538 ms       ~65-120 ms
+ONNX / TensorRT        1.162 ms       4.381 ms       ~2,200-4,100 ms
+ONNX / CUDA           20.750 ms      77.539 ms       ~550-1,800 ms
 ```
 
-**OCIO's shader is about 13x faster than the graph under TensorRT, and
-100x faster than the ONNX Runtime CUDA provider.** The reason is structural
-and visible in the engine: TensorRT compiles the graph to ten layers, not
-one — six `CaskConvolution` for the matrices this compiler emits as 1x1
-`Conv`, alternating with four fused `Myelin` regions, because a convolution
-is a barrier no pointwise fusion crosses. Ten round trips through global
-memory against the shader's one, and at 4K the tensor is 99.5 MB. The CUDA
-provider fuses nothing and pays for all 405 nodes.
+**OCIO's shader is about 8x faster than the graph under TensorRT, and
+140x faster than the ONNX Runtime CUDA provider.** TensorRT compiles the
+whole 513-node graph into a single fused `Myelin` region, so what is left
+of the gap is inside one kernel rather than between ten. What it is made
+of is not measured here — this compiler does evaluate in closed form what
+the shader reads out of a texture (§spec:op-coverage), which is
+arithmetic the shader never runs, but nothing below establishes that as
+the cause. The CUDA provider fuses nothing and pays for every node one at
+a time.
+
+That single region is why `Matrix` emits nine multiplies over the channels
+rather than the 1x1 `Conv` that is the same arithmetic in one node
+(§spec:op-emission). Emitted as a convolution the graph was **2.256 ms and
+8.870 ms** — TensorRT cut it into ten layers, six `CaskConvolution`
+alternating with four fused regions, because a convolution is a barrier no
+pointwise fusion crosses. Ten round trips through a 99.5 MB tensor at 4K,
+for a spelling that changes nothing about the result: on the CPU the two
+are bit-identical. The ONNX Runtime CUDA provider is the one loser, about
+13% slower on this transform and 2x on a bare matrix, because it fuses
+neither and the pointwise spelling is more nodes to dispatch.
 
 Setup is the other half of it: TensorRT builds an engine per shape, so a
-consumer that resizes pays six seconds again, against a millisecond to link
-a shader.
+consumer that resizes pays a few seconds again, against a millisecond to
+link a shader. Dropping the convolutions took that from six seconds to
+two, which is a smaller claim than it sounds — it is still a rebuild.
 
 None of that undoes §spec:problem-statement — the graph exists to run where
 no graphics context does, and it is more accurate than the shader by the

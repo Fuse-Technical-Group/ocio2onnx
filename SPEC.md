@@ -47,9 +47,11 @@ bypassing the arithmetic does not.
 
 **ONNX, not a framework.** ONNX is a portable IR with multiple mature
 executors, so a consumer picks its own runtime and inherits that runtime's
-fusion. A 1×1 convolution followed by a short elementwise chain is
-memory-bandwidth bound and fuses to a single pass — the same place a
-hand-written kernel lands.
+fusion. A pointwise chain is memory-bandwidth bound and fuses to a single
+pass — the same place a hand-written kernel lands. Inheriting a fusion
+means emitting for it: the same arithmetic spelled as a convolution is a
+barrier that fuses to nothing, which is why none of it is
+(§spec:op-emission).
 
 *Rejected*: emitting **torch**, which couples every consumer to one
 framework for math that is framework-independent, and which has no
@@ -168,10 +170,24 @@ over the same code.
 *Status: complete*
 
 Every op emits as ONNX arithmetic over parameters read from OCIO's
-transform introspection. `Matrix` is a 1×1 convolution, `Range` a clamp
-and an affine, the exponential and logarithmic ops elementwise chains.
-ONNX has no per-element branching, so an op with a breakpoint evaluates
-both sides and selects; that costs arithmetic, not correctness.
+transform introspection. `Matrix` takes the channels apart and multiplies,
+`Range` is a clamp and an affine, the exponential and logarithmic ops
+elementwise chains. ONNX has no per-element branching, so an op with a
+breakpoint evaluates both sides and selects; that costs arithmetic, not
+correctness.
+
+**Every op emits pointwise, `Matrix` included, and that is a throughput
+decision rather than a stylistic one.** A 3×3 is a 1×1 convolution in one
+node and ONNX has the op, but a convolution is a barrier no pointwise
+fusion crosses: spelled that way, the six matrices in this config's
+heaviest transform cut TensorRT's engine into ten layers and the graph
+paid ten round trips through a 99.5 MB tensor. Spelled as nine multiplies
+over the channels the same transform compiles to a single fused region and
+runs at twice the rate; on the CPU, where the reference runs, the two are
+bit-identical. Which pointwise spelling fuses *well* is not predictable
+from the op list and was measured rather than reasoned about: two others
+fuse just as completely, and are respectively no faster and three times
+slower.
 
 **Two ops' arithmetic crosses channels.** `REC2100_SURROUND` scales all
 three by a single luminance per pixel, so a per-channel reading of it

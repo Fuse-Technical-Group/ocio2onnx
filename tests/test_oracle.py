@@ -17,11 +17,15 @@ from ocio2onnx import emitters
 from ocio2onnx.addressing import resolve_colorspaces
 from ocio2onnx.builder import CHANNELS
 from ocio2onnx.oracle import (
+    DEFAULT_PROVIDER,
     OPTIMIZATION_FLAGS,
     TOLERANCE,
+    ProviderError,
     compare,
     cpu_reference,
     lattice,
+    resolve_provider,
+    run_graph,
 )
 
 EXTREMES = [-65504.0, -100.0, 100.0, 1000.0, 65504.0]
@@ -150,6 +154,27 @@ def test_the_tolerance_is_the_looser_bound_not_their_sum():
     deviation = 3e-5
     assert deviation < TOLERANCE.absolute + TOLERANCE.relative * want
     assert not compare(*deviate(want, deviation)).ok
+
+
+def test_margin_states_each_deviation_against_the_bound_that_governed_it():
+    """``max_abs`` and ``max_rel`` each answer for only the half of the lattice
+    the other bound did not decide, so neither compares across runs. At 1e8 the
+    relative bound is 1e4; at zero the absolute one is 2e-5."""
+    assert compare(*deviate(1e8, 9e3)).margin == pytest.approx(0.9)
+    assert compare(*deviate(0.0, 1.5e-5)).margin == pytest.approx(0.75)
+
+
+def test_margin_crosses_one_exactly_where_the_tolerance_does():
+    """The figure is only comparable if 1.0 means the same thing on both
+    sides of it, whichever bound got the sample there."""
+    for deviation, agrees in ((1e-5, True), (3e-5, False)):
+        result = compare(*deviate(0.2, deviation))
+        assert result.ok is agrees
+        assert (result.margin <= 1.0) is agrees
+
+
+def test_margin_is_zero_where_nothing_finite_was_compared():
+    assert compare(np.full(4, np.nan), np.full(4, np.nan)).margin == 0.0
 
 
 def test_a_failure_names_the_channel_the_input_and_both_values():
@@ -295,6 +320,37 @@ def test_cpu_reference_does_not_mutate_its_input(config):
     before = samples.copy()
     cpu_reference(processor, samples)
     assert np.array_equal(samples, before)
+
+
+def test_the_graph_runs_on_the_cpu_unless_asked_otherwise():
+    """The reference is a CPU processor, so the default keeps both sides on the
+    same arithmetic and a disagreement attributable to the compiler."""
+    assert resolve_provider(None) == DEFAULT_PROVIDER == "CPUExecutionProvider"
+
+
+@pytest.mark.parametrize("name", ["cpu", "CPU", "CPUExecutionProvider"])
+def test_a_provider_is_named_by_alias_or_in_full(name):
+    assert resolve_provider(name) == "CPUExecutionProvider"
+
+
+def test_a_provider_this_build_does_not_have_is_refused_with_the_list_it_does():
+    """onnxruntime reads its provider list as a preference and falls back to
+    the CPU, so a caller who asked for an absent accelerator would otherwise be
+    handed a CPU result under its name."""
+    with pytest.raises(ProviderError, match="CPUExecutionProvider") as raised:
+        resolve_provider("no-such-provider")
+    assert "'no-such-provider'" in str(raised.value)
+
+
+def test_a_named_provider_reaches_the_session(compile_bare, config):
+    """Naming the default explicitly runs, rather than being refused as a
+    provider the caller may not name."""
+    processor = config.getProcessor("ACEScg", "ACES2065-1")
+    samples = lattice(processor)
+    model = compile_bare(processor)
+    assert np.array_equal(
+        run_graph(model, samples, provider="cpu"), run_graph(model, samples)
+    )
 
 
 def test_cpu_reference_does_not_mutate_a_single_column_of_samples(config, row):

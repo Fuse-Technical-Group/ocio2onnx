@@ -30,7 +30,33 @@ from ocio2onnx.compiler import compile_processor
 #: Re-exported: the reference is OCIO's CPU processor at the same optimization
 #: level the compiler read its op list at, and reading them from one place is
 #: what makes that so (`addressing.OPTIMIZATION_FLAGS`).
-__all__ = ["OPTIMIZATION_FLAGS", "Comparison", "compare", "lattice", "verify"]
+__all__ = [
+    "OPTIMIZATION_FLAGS",
+    "Comparison",
+    "ProviderError",
+    "compare",
+    "lattice",
+    "verify",
+]
+
+#: Where an emitted graph runs unless a caller says otherwise. The reference is
+#: OCIO's CPU processor, so executing the graph on the same kind of arithmetic
+#: keeps a disagreement attributable to the compiler rather than to a runtime's
+#: liberties — fused multiplies and lower-precision transcendentals both move a
+#: result by more than this module's tolerance allows (§spec:verification).
+DEFAULT_PROVIDER = "CPUExecutionProvider"
+
+#: Short names for the runtimes a caller is likely to ask for. Anything absent
+#: is passed through unchanged, so a provider this table has not heard of is
+#: still nameable in full.
+PROVIDER_ALIASES = {
+    "cpu": "CPUExecutionProvider",
+    "cuda": "CUDAExecutionProvider",
+    "tensorrt": "TensorrtExecutionProvider",
+    "dml": "DmlExecutionProvider",
+    "rocm": "ROCMExecutionProvider",
+    "coreml": "CoreMLExecutionProvider",
+}
 
 #: A dense sweep across and beyond the unit interval.
 SWEEP = (-1.0, 2.0, 401)
@@ -115,6 +141,13 @@ class Comparison:
 
     Each of the two ways to fail names a sample: ``worst`` the widest miss of
     the tolerance, ``inverted`` the first class disagreement.
+
+    ``margin`` is the one figure that compares across runs. ``max_abs`` and
+    ``max_rel`` cannot: each is dominated by whichever samples the *other*
+    bound governed, so a graph agreeing to nine digits everywhere still reports
+    a large ``max_abs`` if it also handles a value of 1e31. Stating each
+    deviation as a fraction of the bound that decided it removes the scale —
+    1.0 sits exactly on the tolerance, whichever bound got it there.
     """
 
     compared: int
@@ -125,6 +158,7 @@ class Comparison:
     max_rel: float
     worst: Worst | None
     inverted: Inverted | None = None
+    margin: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -243,16 +277,58 @@ def cpu_reference(processor: OCIO.Processor, samples: np.ndarray) -> np.ndarray:
     )
 
 
+class ProviderError(RuntimeError):
+    """A runtime was named that this onnxruntime build will not run on."""
+
+
+def resolve_provider(name: str | None) -> str:
+    """The execution provider ``name`` asks for, in onnxruntime's spelling.
+
+    Refusing an absent provider is the point. onnxruntime reads its provider
+    list as a preference rather than a requirement and quietly falls back to
+    the CPU, so a caller who asked for the GPU would otherwise be told its
+    graph verified there when it never left the CPU — a report about a run that
+    did not happen, which is the class of answer this module exists to prevent
+    (§spec:verification).
+    """
+    if name is None:
+        return DEFAULT_PROVIDER
+    provider = PROVIDER_ALIASES.get(name.lower(), name)
+    available = ort.get_available_providers()
+    if provider not in available:
+        raise ProviderError(
+            f"{name!r} is not in this onnxruntime build, which offers "
+            f"{', '.join(available)}"
+        )
+    return provider
+
+
 def run_graph(
     model: onnx.ModelProto,
     samples: np.ndarray,
     parameters: Mapping[str, Any] | None = None,
+    provider: str | None = None,
+    strict: bool = False,
 ) -> np.ndarray:
     """Execute an emitted graph over ``samples``.
 
     ``parameters`` binds live inputs (§spec:dynamic-properties). One left
     unbound reads the default the graph carries, which is what makes a sweep a
     statement about one artifact rather than about several.
+
+    ``provider`` names the runtime, defaulting to the CPU for the reason
+    `DEFAULT_PROVIDER` gives. A named one that loaded but did not take the
+    session is refused rather than reported, on the same grounds as one that is
+    absent: both would otherwise return a CPU result under a GPU's name.
+
+    That check answers for the session, not for every node in it. onnxruntime
+    appends the CPU behind whatever it was asked for and places on it whatever
+    the named provider would not take — sometimes by design, as with the shape
+    ops it keeps off an accelerator deliberately. ``strict`` refuses that too,
+    so the provider named is the provider that ran all of it. It is not the
+    default because it is a stronger claim than most callers want: on the
+    pinned config's heaviest transform, TensorRT passes it and the CUDA
+    provider does not.
 
     It cannot bind the image. A caller that named it there would run the graph
     on one array while `compare` held the answer against a reference computed
@@ -264,14 +340,49 @@ def run_graph(
     if INPUT in bound:
         raise ValueError(f"{INPUT!r} is the image, not a live parameter")
 
-    session = ort.InferenceSession(
-        model.SerializeToString(), providers=["CPUExecutionProvider"]
-    )
+    wanted = resolve_provider(provider)
+    options = ort.SessionOptions()
+    if strict:
+        if wanted == DEFAULT_PROVIDER:
+            raise ProviderError(
+                f"{wanted} cannot be held to running no node on the CPU"
+            )
+        options.add_session_config_entry("session.disable_cpu_ep_fallback", "1")
+
+    try:
+        session = ort.InferenceSession(
+            model.SerializeToString(), options, providers=[wanted]
+        )
+    except Exception as exc:
+        # Under `strict` this is where a node placed on the CPU surfaces, and
+        # for a provider whose libraries are missing it is where some builds
+        # refuse. Either way it is the runtime declining, not the graph.
+        if wanted == DEFAULT_PROVIDER:
+            raise
+        raise ProviderError(f"{wanted} would not take the graph: {exc}") from exc
+
+    if wanted not in session.get_providers():
+        # onnxruntime lists a provider it was built with whether or not the
+        # driver and libraries behind it are installed, so availability is
+        # settled here rather than in `resolve_provider`.
+        raise ProviderError(
+            f"{wanted} did not load; the session runs on "
+            f"{', '.join(session.get_providers())}"
+        )
     inputs = {
         name: np.asarray(value, dtype=np.float32) for name, value in bound.items()
     }
     inputs[INPUT] = np.ascontiguousarray(samples, dtype=np.float32)
-    return session.run(None, inputs)[0]
+    try:
+        return session.run(None, inputs)[0]
+    except Exception as exc:
+        # Off the default only. The same graph runs on the CPU, so a failure
+        # that appears once it moves is the accelerator's — an unimplemented
+        # kernel, or a support library it found no more than a name for.
+        # Widening this would rename the compiler's own bugs after a runtime.
+        if wanted == DEFAULT_PROVIDER:
+            raise
+        raise ProviderError(f"{wanted} could not run the graph: {exc}") from exc
 
 
 def compare(
@@ -307,13 +418,17 @@ def compare(
     relative = np.divide(deviation, np.abs(w), out=np.zeros_like(w), where=w != 0)
     bound = TOLERANCE.bound(w)
     over = deviation > bound
+    # Each deviation against the bound that governed it, which is what makes
+    # one run comparable with another. Read by `worst` to rank the misses and
+    # by `margin` to state how close the whole lattice came.
+    ratio = deviation / bound
 
     def input_at(index):
         return float(samples.ravel()[index]) if samples is not None else np.nan
 
     worst = None
     if over.any():
-        k = int(np.argmax(deviation / bound))
+        k = int(np.argmax(ratio))
         worst = Worst(
             channel=channel_of(usable[k], want.shape),
             index=int(usable[k]),
@@ -345,18 +460,35 @@ def compare(
         max_rel=float(relative.max()) if relative.size else 0.0,
         worst=worst,
         inverted=inverted,
+        margin=float(ratio.max()) if ratio.size else 0.0,
     )
 
 
-def verify(resolved: Resolved, model: onnx.ModelProto | None = None) -> Comparison:
+def verify(
+    resolved: Resolved,
+    model: onnx.ModelProto | None = None,
+    provider: str | None = None,
+    strict: bool = False,
+) -> Comparison:
     """Hold a graph against the oracle, compiling one if none is given.
 
     A caller holding the model it is about to write hands it over, so what is
     verified is the artifact rather than a second compilation of the request.
+
+    ``provider`` moves only the graph's side of the comparison; the reference
+    stays OCIO's CPU processor, and the tolerance stays what §spec:verification
+    set. So a sweep that passes on the CPU and fails on an accelerator has
+    measured that runtime's arithmetic, not the compiler's reading of the
+    config — which is why the CPU remains the default and the claim.
     """
     samples = lattice(resolved.processor)
     return compare(
         cpu_reference(resolved.processor, samples),
-        run_graph(compile_processor(resolved) if model is None else model, samples),
+        run_graph(
+            compile_processor(resolved) if model is None else model,
+            samples,
+            provider=provider,
+            strict=strict,
+        ),
         samples,
     )

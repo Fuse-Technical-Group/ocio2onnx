@@ -93,6 +93,39 @@ def test_compile_verify_holds_the_graph_against_the_cpu_processor(graph, capsys)
     assert "outside tolerance" in printed
 
 
+def test_compile_verify_runs_where_provider_says(graph, capsys):
+    display, view = OPEN_VIEW
+    argv = ["compile", "--display", display, "--view", view, "-o", graph, "--verify"]
+    assert main([*argv, "--provider", "cpu"]) == OK
+    assert "0 of" in capsys.readouterr().out
+
+
+def test_a_provider_this_build_does_not_have_is_an_answer_not_a_traceback(
+    graph, capsys, tmp_path
+):
+    """A refusal names what the build does offer and leaves nothing behind: a
+    graph written after its verification could not run is a graph certified on
+    a claim nobody checked."""
+    display, view = OPEN_VIEW
+    code = main(
+        [
+            "compile",
+            "--display",
+            display,
+            "--view",
+            view,
+            "-o",
+            graph,
+            "--verify",
+            "--provider",
+            "no-such-provider",
+        ]
+    )
+    assert code == FAILED
+    assert "CPUExecutionProvider" in capsys.readouterr().err
+    assert not (tmp_path / "graph.onnx").exists()
+
+
 @pytest.mark.parametrize(("display", "view"), (OPEN_VIEW, HLG_VIEW))
 def test_compile_takes_a_display_view(display, view, graph):
     """The HLG view is here because a consumer asking for HLG output used to

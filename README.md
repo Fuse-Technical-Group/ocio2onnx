@@ -192,6 +192,106 @@ ocio2onnx verify [--config URI]
 Against the pinned ACES Studio config: **159 verified, 0 refused, 0
 failed, 0 skipped, 159 total**.
 
+### Against OCIO's own shader
+
+OCIO's GPU path is the incumbent, and it is a fair question whether
+compiling to ONNX costs accuracy against it. It does not — it gains some.
+Both are scored against the same CPU processor, over the same lattice, at
+the same tolerance:
+
+```sh
+ocio2onnx shader [--config URI]      # needs the shader extra and a GL 4.0 driver
+```
+
+```text
+               this compiler   OCIO's shader
+verified:                159             159
+of:                      159             159
+margin:               0.0639           0.314
+```
+
+Both agree with OCIO's CPU processor everywhere, so the pass counts do not
+separate them. `margin` does: every deviation stated as a fraction of the
+tolerance bound that governed it, which is the only figure comparable
+across two candidates — `max_abs` and `max_rel` are each dominated by the
+samples the *other* bound decided. The graph's worst sample anywhere in the
+config uses 6.4% of its tolerance; OCIO's own shader uses 31.4%.
+
+The reason is the one §spec:op-coverage names. OCIO's shader sampled a
+texture for **48 of the 159** transforms, **8** of which carry no `Lut1D`
+op to account for it: they are the ACES 2.0 output transforms, and the two
+tables are the hue and gamut-cusp data its fixed function needs, which
+OCIO's GPU path cannot evaluate in closed form. This compiler samples for
+none of them. Where OCIO's shaders sample, this evaluates.
+
+This is an accuracy comparison only. Throughput is the next section.
+
+### What it costs per frame
+
+```sh
+nvidia-smi -lgc 1500,1500 && nvidia-smi -lmc 8001,8001   # pin the clocks first
+ocio2onnx bench --display "sRGB - Display" --view "ACES 2.0 - SDR 100 nits (Rec.709)"
+nvidia-smi -rgc && nvidia-smi -rmc                       # give them back
+```
+
+Without pinned clocks a GPU boosts on whatever headroom it has and the same
+frame times differently cold and warm, so `bench` prints the clocks it
+actually observed with every run. On an RTX A6000 at 1500 MHz, the ACES 2.0
+output transform:
+
+```text
+                     1920x1080      3840x2160        setup
+OCIO GLSL              0.168 ms       0.554 ms       ~70-125 ms
+ONNX / TensorRT        2.305 ms       8.756 ms       ~6,000 ms
+ONNX / CUDA           18.302 ms      68.746 ms       ~600-1,500 ms
+```
+
+**OCIO's shader is about 13x faster than the graph under TensorRT, and
+100x faster than the ONNX Runtime CUDA provider.** The reason is structural
+and visible in the engine: TensorRT compiles the graph to ten layers, not
+one — six `CaskConvolution` for the matrices this compiler emits as 1x1
+`Conv`, alternating with four fused `Myelin` regions, because a convolution
+is a barrier no pointwise fusion crosses. Ten round trips through global
+memory against the shader's one, and at 4K the tensor is 99.5 MB. The CUDA
+provider fuses nothing and pays for all 405 nodes.
+
+Setup is the other half of it: TensorRT builds an engine per shape, so a
+consumer that resizes pays six seconds again, against a millisecond to link
+a shader.
+
+None of that undoes §spec:problem-statement — the graph exists to run where
+no graphics context does, and it is more accurate than the shader by the
+section above. But it is slower, and by how much is a measured number
+rather than a hope.
+
+### Where the graph runs
+
+Both commands take `--provider` — `cpu`, `cuda`, `tensorrt`, `dml`, or an
+onnxruntime provider's full name — and default to the CPU, which is the
+arithmetic the reference itself runs on. Only the graph's side moves: the
+reference stays OCIO's CPU processor and the tolerance stays what it is, so
+a sweep that passes on the CPU and fails on an accelerator has measured
+that runtime's fused multiplies and transcendentals rather than the
+compiler's reading of the config. The claim this project makes is the CPU
+one; the rest is a way to ask what a consumer's own runtime will do.
+
+A provider the installed onnxruntime does not offer is refused with the
+list it does, and one that loads but cannot run is refused naming itself,
+so no session silently becomes a CPU session under a GPU's name.
+
+That answers for the session, not for every node in it. onnxruntime
+appends the CPU behind whatever it was asked for and places on it anything
+the named provider will not take — sometimes deliberately, as with the
+shape ops it keeps off an accelerator on purpose. `--strict-provider`
+refuses that too. It is not the default because it is a stronger claim
+than most callers want: on this config's heaviest transform TensorRT
+passes it and the CUDA provider does not.
+
+Running on CUDA needs `onnxruntime-gpu` in place of `onnxruntime`, plus a
+CUDA runtime and cuDNN 9 its loader can find. The two packages install the
+same module and cannot share an environment, so the extra is separate and
+`uv run --no-sync` is what keeps a sync from putting the CPU build back.
+
 ## Trusting a config
 
 Loading a config is trusting it. An OCIO config may reference LUT files by

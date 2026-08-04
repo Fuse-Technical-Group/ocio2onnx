@@ -25,6 +25,14 @@ dependencies = [
 # The oracle harness executes an emitted graph, which needs a runtime.
 # Compiling does not, so this stays out of the runtime dependency set.
 verify = ["onnxruntime>=1.19"]
+# The same module under another name: `onnxruntime-gpu` overwrites the files
+# `onnxruntime` owns, so the two cannot be resolved together and this is not a
+# superset of `verify`. Install one or the other, never both.
+verify-gpu = ["onnxruntime-gpu>=1.19"]
+# Scoring OCIO's own shader against the same oracle needs a GL 4.0 driver and
+# a context to give it. Nothing else in the project does, which is the point
+# §spec:problem-statement is making.
+shader = ["glfw>=2.7", "PyOpenGL>=3.1"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]

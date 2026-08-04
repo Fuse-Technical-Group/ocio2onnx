@@ -176,6 +176,18 @@ elementwise chains. ONNX has no per-element branching, so an op with a
 breakpoint evaluates both sides and selects; that costs arithmetic, not
 correctness.
 
+**How much arithmetic is measured rather than waved at.** Replacing one
+arm of all 36 `Where` in this config's heaviest transform with a constant
+and deleting what then falls dead removes 36% of the graph's instructions
+when it is the true arms and 61% when it is the false ones — 18% and 52%
+of the frame. The recoverable work is between the two, because which arm
+a pixel needs is exactly what the breakpoint decides, and it is a ceiling
+rather than a saving: a GPU that branches still runs both sides wherever
+a warp disagrees. Nor is it the whole distance to OCIO's shader. Even the
+cheaper bound leaves the graph at four times the shader's instruction
+count, and what remains is the closed-form evaluation this compiler does
+where the shader samples (§spec:op-coverage).
+
 **Every op emits pointwise, `Matrix` included, and that is a throughput
 decision rather than a stylistic one.** A 3×3 is a 1×1 convolution in one
 node and ONNX has the op, but a convolution is a barrier no pointwise

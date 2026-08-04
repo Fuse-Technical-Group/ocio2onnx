@@ -270,7 +270,14 @@ not care what clock retired it. Pinning does not reach them either. The
 frame times above are `bench`'s, where both sides run in one harness at
 one pinned clock.
 
-Where the extra goes is legible on both sides. The shader's throughput is
+Between a third and two thirds of those instructions are both sides of a
+breakpoint, only one of which any given pixel needs — measured by stubbing
+one arm of every `Where` and deleting what falls dead (§spec:op-emission).
+It is a ceiling and not a saving, since a GPU that branches still runs
+both sides wherever a warp disagrees, and even the cheaper bound leaves
+the graph at four times the shader's instruction count.
+
+Where the rest goes is legible on both sides. The shader's throughput is
 dominated by its special-function pipe and its texture cache answers 87%
 of the reads it makes, so the two tables OCIO bakes cost it almost
 nothing — and evaluating that same appearance model in closed form
